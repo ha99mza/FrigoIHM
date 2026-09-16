@@ -87,7 +87,17 @@ void Controller::save(const Protocol::Config &values) {
  status="Envoi puis vérification de la signature…";deadline.start();emit changed();
 }
 void Controller::receive(quint32 id,const QByteArray &p) {
- if(id>=0x100 && id<=0x104) {auto v=Protocol::decode(p,2,true);if(!v)return;int i=id-0x100;temperatures[i]=double(*v)/(i==4?1000:10);seen[i]=QDateTime::currentMSecsSinceEpoch();}
+ if(id>=0x100 && id<=0x104) {
+  const int i=int(id-0x100);
+  // CAP1..CAP3 and EVA: original firmware uses int16 LE, observed firmware
+  // sends int32 LE. Both are scaled by 10. Battery remains int16 LE / 1000.
+  const int bytes=int(p.size());
+  if(i==4 ? bytes!=2 : (bytes!=2 && bytes!=4)) return;
+  auto value=Protocol::decode(p,bytes,true);
+  if(!value) return;
+  temperatures[i]=double(*value)/(i==4?1000.0:10.0);
+  seen[i]=QDateTime::currentMSecsSinceEpoch();
+ }
  else if(id==0x105 && p.size()==1) {door=quint8(p[0])==3; if(quint8(p[0])==2 && alarm==Protocol::errorText(0x52)){sound(false);alarm.clear();}}
  else if((id==0x106 || id==0x107) && p.size()==1) packs[id-0x106]=quint8(p[0]);
  else if(id==0x30e && p.size()==1) maintenanceActive=quint8(p[0])==1;

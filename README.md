@@ -52,13 +52,14 @@ timeout 10s candump -e can0
 ./build/frigo --fullscreen --interface can0
 ```
 
-`timeout` peut retourner 124 lorsque les dix secondes sont écoulées, ce qui n’est pas une erreur CAN. Vérifier `bitrate 250000`, le drapeau `UP` et l’état CAN (normalement `ERROR-ACTIVE`). L’absence de trames dans `candump` peut venir d’une carte silencieuse ou du bus : elle ne permet pas à elle seule de conclure à une panne de l’IHM. Si des trames sont présentes mais aucune température ne s’affiche, relever les IDs et DLC : la moyenne attend les trois IDs standard `0x100`, `0x101`, `0x102`, chacun sur deux octets.
+`timeout` peut retourner 124 lorsque les dix secondes sont écoulées, ce qui n’est pas une erreur CAN. Vérifier `bitrate 250000`, le drapeau `UP` et l’état CAN (normalement `ERROR-ACTIVE`). L’absence de trames dans `candump` peut venir d’une carte silencieuse ou du bus : elle ne permet pas à elle seule de conclure à une panne de l’IHM. Si des trames sont présentes mais aucune température ne s’affiche, relever les IDs et DLC : la moyenne attend les trois IDs standard `0x100`, `0x101`, `0x102`, chacun sur deux ou quatre octets (entier signé little-endian divisé par 10).
 
 Référence : [code SocketCAN Qt 5.15](https://github.com/qt/qtserialbus/blob/5.15/src/plugins/canbus/socketcan/socketcanbackend.cpp).
 
 ## Comportement CAN
 
 - CAN classique, identifiants standard ; les trames RTR, erreurs, étendues et échos locaux ne sont pas décodés comme des données.
+- Températures `0x100`–`0x103` : `int16 LE / 10` sur deux octets ou `int32 LE / 10` sur quatre octets. Le firmware observé transmet quatre octets (`1F 01 00 00` = 28,7 °C). Batterie `0x104` : deux octets uniquement, divisés par 1000.
 - CAP1–CAP3 : moyenne des trois sondes, sans appliquer deux fois les offsets. Si une mesure manque ou date de plus de 6 secondes, affichage `—`. EVA et batterie ont également une détection de péremption. La batterie reste une tension supposée d’après votre documentation.
 - Démarrage : lecture RTR `0x30F`, comparaison avec un cache complet. Sans cache ou si la signature diffère, lecture de **tous les paramètres `0x300` à `0x30C`**, offsets inclus. Seul un jeu complet et cohérent est accepté. Délais et deux tentatives supplémentaires pour les lectures.
 - Sauvegarde : seules les valeurs brutes modifiées sont émises ; trames espacées de 100 ms par timer non bloquant. Températures et offsets ×10 ; heures ×3600 ; minutes ×60. Signature calculée sur les 13 valeurs brutes, modulo **65535**, puis envoyée sur deux octets. Une lecture RTR supplémentaire vérifie la signature avant de persister le cache et réactiver les sauvegardes.
