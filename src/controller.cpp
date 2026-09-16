@@ -2,6 +2,7 @@
 #include <QCanBus>
 #include <QSettings>
 #include <QProcess>
+#include <QVariant>
 #include <cmath>
 #include <limits>
 Controller::Controller(bool sim,QString iface,QObject *parent):QObject(parent),simulation(sim),interfaceName(iface) {
@@ -44,6 +45,10 @@ void Controller::start() {
  }
  QString error;device=QCanBus::instance()->createDevice("socketcan",interfaceName,&error);
  if(!device) {fail(error);return;}device->setParent(this);
+ // Qt 5.15 SocketCAN adds a default BitRateKey of 500000. Remove that
+ // configuration before opening: Linux owns the bitrate (250000 on can0),
+ // and this unprivileged application must not attempt to change it.
+ device->setConfigurationParameter(QCanBusDevice::BitRateKey, QVariant());
  connect(device,&QCanBusDevice::framesReceived,this,[this]{
   while(device->framesAvailable()) {auto f=device->readFrame();
    if(f.frameType()==QCanBusFrame::DataFrame && !f.hasExtendedFrameFormat() && !f.hasLocalEcho()) receive(f.frameId(),f.payload());}

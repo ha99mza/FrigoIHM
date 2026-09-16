@@ -36,6 +36,26 @@ sudo ip link set can0 up
 
 Remplacer les chemins par les scripts exécutables réels. La commande d’arrêt GPIO n’a pas encore été fournie : l’application accepte un exécutable configurable, sans interprétation par un shell. Sans cette option, l’acquittement reste visuel et ne peut pas arrêter le GPIO. L’application doit tourner dans une session graphique utilisateur ; ne pas l’exécuter en root. Le système configure le débit CAN avant son démarrage.
 
+### Diagnostic CAN : permission refusée / débit 500000
+
+Le plugin SocketCAN de Qt 5.15 ajoute par défaut `BitRateKey = 500000`. L’application supprime maintenant ce réglage avec `setConfigurationParameter(QCanBusDevice::BitRateKey, QVariant())` **avant** `connectDevice()`. Cela conserve la configuration de Linux et évite la tentative de changement de débit qui produit `RTNETLINK answers: Operation not permitted` / `Cannot apply parameter: 4 with value: 500000`. Ne pas remplacer cette ligne par un débit de 250000 : Qt tenterait toujours une opération privilégiée.
+
+Après transfert du code corrigé sur Ubuntu, recompiler puis vérifier :
+
+```bash
+cmake --build build -j2
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 250000 restart-ms 100
+sudo ip link set can0 up
+ip -details -statistics link show can0
+timeout 10s candump -e can0
+./build/frigo --fullscreen --interface can0
+```
+
+`timeout` peut retourner 124 lorsque les dix secondes sont écoulées, ce qui n’est pas une erreur CAN. Vérifier `bitrate 250000`, le drapeau `UP` et l’état CAN (normalement `ERROR-ACTIVE`). L’absence de trames dans `candump` peut venir d’une carte silencieuse ou du bus : elle ne permet pas à elle seule de conclure à une panne de l’IHM. Si des trames sont présentes mais aucune température ne s’affiche, relever les IDs et DLC : la moyenne attend les trois IDs standard `0x100`, `0x101`, `0x102`, chacun sur deux octets.
+
+Référence : [code SocketCAN Qt 5.15](https://github.com/qt/qtserialbus/blob/5.15/src/plugins/canbus/socketcan/socketcanbackend.cpp).
+
 ## Comportement CAN
 
 - CAN classique, identifiants standard ; les trames RTR, erreurs, étendues et échos locaux ne sont pas décodés comme des données.
