@@ -56,6 +56,18 @@ timeout 10s candump -e can0
 
 Référence : [code SocketCAN Qt 5.15](https://github.com/qt/qtserialbus/blob/5.15/src/plugins/canbus/socketcan/socketcanbackend.cpp).
 
+### Synchronisation perdue après une réponse répétée
+
+Le diagnostic sur la machine `terminalBus` a montré une synchronisation réussie, suivie de « Paramètre reçu hors synchronisation » dès qu’une réponse `0x300`–`0x30C` identique arrivait de nouveau. Une ancienne IHM Electron fonctionnait en parallèle et demandait également les paramètres. Le contrôleur Qt ignore maintenant ces répétitions lorsque la valeur est identique au cache vérifié. Une valeur réellement différente invalide toujours la synchronisation et indique l’ID concerné.
+
+Un diagnostic sans écriture des réglages est disponible après compilation :
+
+```bash
+./build/can_diagnostic can0
+```
+
+Il ouvre un cache temporaire indépendant, émet uniquement les demandes RTR de démarrage, affiche les transitions de synchronisation et termine après 18 secondes. Le code de retour est 0 si la configuration est synchronisée à la fin, 1 sinon. Il n’appelle ni sauvegarde des réglages, ni commande de relais, ni activation de maintenance.
+
 ## Comportement CAN
 
 - CAN classique, identifiants standard ; les trames RTR, erreurs, étendues et échos locaux ne sont pas décodés comme des données.

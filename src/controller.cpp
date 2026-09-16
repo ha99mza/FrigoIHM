@@ -110,7 +110,12 @@ void Controller::receive(quint32 id,const QByteArray &p) {
   if(fetching){candidate[i]=*v;received.insert(i);if(received.size()==13){
    if(!Protocol::valid(candidate) || Protocol::signature(candidate)!=expectedSignature){fail("Signature incohérente après lecture des paramètres");return;}
    config=candidate;cacheValid=true;fetching=false;busy=false;synced=true;deadline.stop();persist();status="Paramètres synchronisés";emit configChanged();
-  }} else if(!busy){synced=false;status="Paramètre reçu hors synchronisation : relire la carte";}
+  }} else if(!busy && *v!=config[i]){
+   // Late replies and requests from another CAN client can repeat a setting.
+   // Only an actual change invalidates the configuration already verified.
+   synced=false;
+   status=QString("Paramètre 0x%1 modifié sur la carte : relire les réglages").arg(id,3,16);
+  }
  }
  else if(id==0x30f && p.size()==2 && waitingSignature) {
   auto sig=quint16(*Protocol::decode(p,2,false));

@@ -4,6 +4,20 @@
 class Tests:public QObject {
  Q_OBJECT
 private slots:
+ void repeatedSettingsPreserveSynchronization(){
+  Controller c(true,"test");c.start();QTRY_VERIFY(c.synced);
+  const auto verified=c.config;
+  for(int repeat=0;repeat<3;++repeat)
+   for(int i=0;i<13;++i){
+    c.receive(0x300+i,Protocol::encode(verified[i]));
+    QVERIFY(c.synced);QVERIFY(c.config==verified);
+   }
+  // External changes still require re-reading; they never silently update the cache.
+  c.receive(0x309,Protocol::encode(verified[9]+1));
+  QVERIFY(!c.synced);QVERIFY(c.config==verified);
+  QVERIFY(c.status.contains("309"));
+  c.receive(0x309,Protocol::encode(verified[9]));QVERIFY(!c.synced);
+ }
  void capturedFourByteTemperatures(){
   Controller c(false,"can0"); // Replay RX without opening a device or running the simulator.
   c.receive(0x100,QByteArray::fromHex("1f010000"));
