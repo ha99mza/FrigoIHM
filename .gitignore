@@ -1,0 +1,5 @@
+build*/
+dist/
+Lancer simulation.cmd
+captures/
+*.user

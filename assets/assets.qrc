@@ -1,0 +1,6 @@
+<RCC><qresource prefix="/fonts">
+<file alias="IBMPlexSans-Regular.ttf">fonts/IBMPlexSans-Regular.ttf</file>
+<file alias="IBMPlexMono-Regular.ttf">fonts/IBMPlexMono-Regular.ttf</file>
+<file alias="IBMPlexMono-Medium.ttf">fonts/IBMPlexMono-Medium.ttf</file>
+<file alias="IBMPlexMono-SemiBold.ttf">fonts/IBMPlexMono-SemiBold.ttf</file>
+</qresource></RCC>
