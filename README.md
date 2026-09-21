@@ -73,15 +73,29 @@ Il ouvre un cache temporaire indépendant, émet uniquement les demandes RTR de 
 - CAN classique, identifiants standard ; les trames RTR, erreurs, étendues et échos locaux ne sont pas décodés comme des données.
 - Températures `0x100`–`0x103` : `int16 LE / 10` sur deux octets ou `int32 LE / 10` sur quatre octets. Le firmware observé transmet quatre octets (`1F 01 00 00` = 28,7 °C). Batterie `0x104` : deux octets uniquement, divisés par 1000.
 - CAP1–CAP3 : moyenne des trois sondes, sans appliquer deux fois les offsets. Si une mesure manque ou date de plus de 6 secondes, affichage `—`. EVA et batterie ont également une détection de péremption. La batterie reste une tension supposée d’après votre documentation.
-- Démarrage : lecture RTR `0x30F`, comparaison avec un cache complet. Sans cache ou si la signature diffère, lecture de **tous les paramètres `0x300` à `0x30C`**, offsets inclus. Seul un jeu complet et cohérent est accepté. Délais et deux tentatives supplémentaires pour les lectures.
-- Sauvegarde : seules les valeurs brutes modifiées sont émises ; trames espacées de 100 ms par timer non bloquant. Températures et offsets ×10 ; heures ×3600 ; minutes ×60. Signature calculée sur les 13 valeurs brutes, modulo **65535**, puis envoyée sur deux octets. Une lecture RTR supplémentaire vérifie la signature avant de persister le cache et réactiver les sauvegardes.
+- Démarrage : lecture RTR `0x30F`, comparaison avec le fichier JSON complet. Si la signature correspond, aucun paramètre n’est demandé. Sans cache ou si la signature diffère, lecture de **tous les paramètres `0x300` à `0x30C`**, offsets inclus. Seul un jeu complet et cohérent est accepté. Délais et deux tentatives supplémentaires pour les lectures.
+- Sauvegarde : seules les valeurs brutes modifiées sont émises ; trames espacées de 500 ms par timer non bloquant. Températures et offsets ×10 ; heures ×3600 ; minutes ×60. Signature calculée sur les 13 valeurs brutes, modulo **65535**, puis envoyée sur deux octets. Une lecture RTR supplémentaire vérifie la signature avant de persister le cache et réactiver les sauvegardes.
 - Les entiers signés négatifs sont sommés comme des valeurs signées. Le reste négatif est normalisé dans `[0, 65534]`. Cette convention devra être confrontée au firmware si celui-ci additionne des représentations `uint32_t`.
 - Calibrage : bouton distinct dans Maintenance, envoi des seuls offsets modifiés puis signature incluant la configuration entière.
-- Maintenance : commande `0x30E` ; l’interface attend le retour de la carte pour afficher le mode actif. Les commandes relais nécessitent ce mode et la réception préalable du masque du pack, afin de préserver les autres bits. Les relais restent désactivés si la carte ne publie pas leur état.
+- Maintenance : commande `0x30E`, puis requête **RTR `0x30E` (DLC 1)** ; réponse `0` = mode inactif, `1` = mode actif. Toute autre valeur est ignorée ; sans réponse sous 5 secondes, le mode reste non confirmé. Ensuite, l’interface attend le retour de la carte pour afficher le mode actif. Les commandes relais nécessitent ce mode et la réception préalable du masque du pack, afin de préserver les autres bits. Les relais restent désactivés si la carte ne publie pas leur état.
 - Codes d’erreur fournis décodés et journalisés (500 entrées en mémoire). `0x52` active le script GPIO ; porte `0x02` arrête le script et retire l’alarme porte affichée. L’acquittement utilisateur est local : aucun ID CAN d’acquittement n’a été inventé. RTC `0x30D` n’est pas envoyé.
 - En cas d’échec, aucune sauvegarde automatique n’est retentée. Utiliser « Relire la carte » après correction ; après déconnexion du périphérique, relancer l’application.
 
 La signature seule n’est pas un accusé de réception transactionnel et peut avoir des collisions, conformément au protocole fourni. Les bornes de saisie reflètent les types CAN et la contrainte min ≤ max ; les limites métier spécifiques à votre équipement restent à préciser.
+
+## Fichier JSON des réglages
+
+Le cache est enregistré atomiquement dans `settings.json`, dans le dossier `QStandardPaths::AppConfigLocation` (habituellement `~/.config/Frigo/IHM/settings.json` sous Linux). Le PIN reste distinct dans QSettings. Pour choisir le fichier :
+
+```bash
+./build/frigo --fullscreen --interface can0 --settings-file "$HOME/.config/frigo/settings.json"
+```
+
+Le JSON contient `version: 1`, `commit_signature` et `settings`, un objet dont les clés `300` à `30c` contiennent les 13 entiers bruts CAN (avant conversion en unités affichées). Un fichier incomplet, invalide ou dont la signature ne correspond pas aux valeurs déclenche une lecture complète. L’ancien cache QSettings n’est plus utilisé : le premier lancement relit la carte.
+
+Les modifications sont comparées au dernier jeu confirmé chargé de ce fichier. Seuls les paramètres différents partent, puis le commit `0x30F`, puis une lecture RTR de vérification. Le JSON est remplacé uniquement après confirmation : un échec CAN conserve les valeurs précédentes. Une erreur d’écriture JSON est affichée et impose une resynchronisation. Ne pas modifier le fichier pendant l’exécution de l’IHM.
+
+Toutes les trames émises par cette application sont espacées de 500 ms. Le délai de synchronisation inclut la durée de la file d’envoi puis 5 secondes de réponse ; une lecture des 13 paramètres prend au moins 6,5 secondes. Les lectures peuvent être retentées deux fois, jamais les écritures automatiquement. La simulation ne touche pas au JSON réel ; un fichier de simulation peut être fourni explicitement avec `--settings-file`.
 
 ## Réseau et clavier
 

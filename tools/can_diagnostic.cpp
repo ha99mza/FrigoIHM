@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName("ReadOnly");
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, cache.path());
-    Controller controller(false, argc > 1 ? QString::fromLocal8Bit(argv[1]) : "can0");
+    Controller controller(false, argc > 1 ? QString::fromLocal8Bit(argv[1]) : "can0", nullptr, cache.filePath("settings.json"));
     QString last;
     QObject::connect(&controller, &Controller::changed, [&] {
         if (last != controller.status) {

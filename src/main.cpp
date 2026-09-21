@@ -11,12 +11,13 @@ int main(int argc, char **argv) {
     parser.addOption({"simulate", "Utiliser une carte simulée"});
     parser.addOption({"fullscreen", "Afficher en plein écran"});
     parser.addOption({"interface", "Interface SocketCAN", "name", "can0"});
+    parser.addOption({"settings-file", "Fichier JSON des reglages confirmes", "path"});
     parser.addOption({"alarm-start", "Chemin de l’exécutable qui active l’alarme", "path"});
     parser.addOption({"alarm-stop", "Chemin de l’exécutable qui arrête l’alarme", "path"});
     parser.addOption({"screenshot", "Enregistrer une capture puis quitter (simulation)", "path"});
     parser.addOption({"preview-page", "Écran à capturer en simulation", "name", "temp"});
     parser.process(app);
-    Controller controller(parser.isSet("simulate"), parser.value("interface"));
+    Controller controller(parser.isSet("simulate"), parser.value("interface"), nullptr, parser.value("settings-file"));
     controller.alarmStart = parser.value("alarm-start");
     controller.alarmStop = parser.value("alarm-stop");
     Window window(&controller);

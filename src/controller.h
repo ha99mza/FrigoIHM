@@ -9,11 +9,12 @@
 class Controller : public QObject {
  Q_OBJECT
 public:
- explicit Controller(bool simulation,QString interfaceName,QObject *parent=nullptr);
+ explicit Controller(bool simulation,QString interfaceName,QObject *parent=nullptr,QString settingsFile={});
  void start();
  void synchronize();
  void save(const Protocol::Config &values);
  void maintenance(bool active);
+ void requestMaintenance();
  void relay(int pack,int bit,bool active);
  void acknowledge();
  bool fresh(int index) const;
@@ -33,19 +34,24 @@ signals:
 public slots:
  void receive(quint32 id,const QByteArray &payload);
 private:
+ friend class Tests;
  struct Out { quint32 id; QByteArray data; bool remote; };
  QCanBusDevice *device=nullptr;
- QString interfaceName;
- QTimer sender, deadline, simulator;
+ QString interfaceName, settingsFile;
+ QTimer sender, deadline, simulator, maintenanceDeadline;
  QQueue<Out> queue;
  QSet<int> received;
  Protocol::Config candidate{};
+ Protocol::Config simulatedConfig{};
  bool cacheValid=false, fetching=false, verifying=false, waitingSignature=false;
+ bool simulatedMaintenance=false, waitingMaintenance=false;
  quint16 expectedSignature=0;
  int attempts=0;
  void enqueue(quint32 id,QByteArray data,bool remote=false);
  void requestAll();
  void fail(const QString &reason);
- void persist();
+ bool persist();
+ void loadCache();
+ void armDeadline();
  void sound(bool on);
 };
