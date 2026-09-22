@@ -13,9 +13,10 @@
 #include <limits>
 Controller::Controller(bool sim,QString iface,QObject *parent,QString file):QObject(parent),simulation(sim),interfaceName(iface),settingsFile(file) {
  if(settingsFile.isEmpty() && !simulation)
-  settingsFile=QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)+"/settings.json";
+  settingsFile=QDir::homePath()+"/settings.json";
+ if(settingsFile.startsWith("~/"))settingsFile=QDir::homePath()+settingsFile.mid(1);
  loadCache();
- sender.setInterval(500);sender.setTimerType(Qt::PreciseTimer);
+ sender.setInterval(500);sender.setTimerType(Qt::PreciseTimer);sender.setSingleShot(true);
  deadline.setSingleShot(true);deadline.setInterval(5000);
  maintenanceDeadline.setSingleShot(true);maintenanceDeadline.setInterval(5000);
  connect(&maintenanceDeadline,&QTimer::timeout,this,[this]{
@@ -46,6 +47,8 @@ Controller::Controller(bool sim,QString iface,QObject *parent,QString file):QObj
    QCanBusFrame f(out.id,out.data); if(out.remote) f.setFrameType(QCanBusFrame::RemoteRequestFrame);
    if(!device || !device->writeFrame(f)) {fail("Échec d’envoi CAN");return;}
   }
+  // Schedule from this actual send, not a periodic tick that can catch up after a stall.
+  if(!queue.isEmpty())sender.start();
  });
  connect(&deadline,&QTimer::timeout,this,[this]{
   if(++attempts<=2) {
@@ -65,11 +68,13 @@ Controller::Controller(bool sim,QString iface,QObject *parent,QString file):QObj
  });
 }
 void Controller::start() {
+ if(device)return;
  if(simulation) {
   if(!cacheValid)config={20,50,-150,21600,1200,1800,180,600,120,0,0,0,0};
   simulatedConfig=config;cacheValid=true;
   packs[0]=3;packs[1]=2;simulator.start(1000);synchronize();return;
  }
+ if(recovery)recovery->start();
  QString error;device=QCanBus::instance()->createDevice("socketcan",interfaceName,&error);
  if(!device) {fail(error);return;}device->setParent(this);
  // Qt 5.15 SocketCAN adds a default BitRateKey of 500000. Remove that
@@ -78,6 +83,7 @@ void Controller::start() {
  device->setConfigurationParameter(QCanBusDevice::BitRateKey, QVariant());
  connect(device,&QCanBusDevice::framesReceived,this,[this]{
   while(device->framesAvailable()) {auto f=device->readFrame();
+   if(recovery&&!f.hasLocalEcho()&&(f.frameType()==QCanBusFrame::DataFrame||f.frameType()==QCanBusFrame::RemoteRequestFrame))recovery->received();
    if(f.frameType()==QCanBusFrame::DataFrame && !f.hasExtendedFrameFormat() && !f.hasLocalEcho()) receive(f.frameId(),f.payload());}
  });
  connect(device,&QCanBusDevice::errorOccurred,this,[this](QCanBusDevice::CanBusError e){if(e!=QCanBusDevice::NoError) fail(device->errorString());});
@@ -145,6 +151,7 @@ void Controller::save(const Protocol::Config &values) {
  status="Envoi puis vérification de la signature…";armDeadline();emit changed();
 }
 void Controller::receive(quint32 id,const QByteArray &p) {
+ emit frameReceived(id,p,QDateTime::currentMSecsSinceEpoch());
  if(id>=0x100 && id<=0x104) {
   const int i=int(id-0x100);
   // CAP1..CAP3 and EVA: original firmware uses int16 LE, observed firmware
@@ -213,3 +220,16 @@ void Controller::relay(int pack,int bit,bool active) {
 }
 void Controller::sound(bool on) {if(simulation)return;const auto path=on?alarmStart:alarmStop;if(!path.isEmpty())QProcess::startDetached(path,QStringList{});}
 void Controller::acknowledge(){sound(false);alarm.clear();status="Acquittement local (aucune commande CAN définie)";emit changed();}
+void Controller::enableRecovery(int silenceMs){
+ if(simulation||recovery||silenceMs<=0)return;
+ recovery=new CanRecovery(interfaceName,silenceMs,this);
+ connect(recovery,&CanRecovery::restarting,this,[this]{
+  fail("Aucune trame CAN : relance de l'interface");
+  seen.fill(0);door=-1;packs[0]=packs[1]=-1;
+  if(device){device->disconnect(this);device->disconnectDevice();device->deleteLater();device=nullptr;}
+  emit changed();
+ });
+ connect(recovery,&CanRecovery::finished,this,[this](bool success,QString message){
+  status=message;emit changed();if(success)start();
+ });
+}

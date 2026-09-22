@@ -6,11 +6,13 @@
 #include <QQueue>
 #include <QSet>
 #include <QDateTime>
+#include "canrecovery.h"
 class Controller : public QObject {
  Q_OBJECT
 public:
  explicit Controller(bool simulation,QString interfaceName,QObject *parent=nullptr,QString settingsFile={});
  void start();
+ void enableRecovery(int silenceMs=10000);
  void synchronize();
  void save(const Protocol::Config &values);
  void maintenance(bool active);
@@ -31,12 +33,14 @@ signals:
  void changed();
  void configChanged();
  void transmitted(quint32 id,QByteArray payload,bool remote);
+ void frameReceived(quint32 id,QByteArray payload,qint64 timestamp);
 public slots:
  void receive(quint32 id,const QByteArray &payload);
 private:
  friend class Tests;
  struct Out { quint32 id; QByteArray data; bool remote; };
  QCanBusDevice *device=nullptr;
+ CanRecovery *recovery=nullptr;
  QString interfaceName, settingsFile;
  QTimer sender, deadline, simulator, maintenanceDeadline;
  QQueue<Out> queue;

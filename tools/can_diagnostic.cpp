@@ -1,4 +1,5 @@
 #include "controller.h"
+#include "canhistory.h"
 #include <QCoreApplication>
 #include <QDebug>
 #include <QSettings>
@@ -15,6 +16,12 @@ int main(int argc, char **argv) {
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, cache.path());
     Controller controller(false, argc > 1 ? QString::fromLocal8Bit(argv[1]) : "can0", nullptr, cache.filePath("settings.json"));
+    const QString databasePath=argc>2?QString::fromLocal8Bit(argv[2]):cache.filePath("history.sqlite");
+    CanHistory history(databasePath);
+    bool storageFailed=false;
+    QObject::connect(&controller,&Controller::frameReceived,&history,&CanHistory::append);
+    QObject::connect(&history,&CanHistory::error,[&](QString error){storageFailed=true;qCritical().noquote()<<"SQLITE"<<error;});
+    qInfo().noquote()<<"DATABASE"<<databasePath;
     QString last;
     QObject::connect(&controller, &Controller::changed, [&] {
         if (last != controller.status) {
@@ -35,7 +42,7 @@ int main(int argc, char **argv) {
     QTimer::singleShot(0, &controller, &Controller::start);
     QTimer::singleShot(18000, &app, [&] {
         qInfo() << "FINAL synced=" << controller.synced << "mean=" << controller.mean();
-        app.exit(controller.synced ? 0 : 1);
+        app.exit(controller.synced && !storageFailed ? 0 : 1);
     });
     return app.exec();
 }

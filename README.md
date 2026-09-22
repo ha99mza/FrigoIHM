@@ -16,7 +16,7 @@ Qt 5.15 est pris en charge pour utiliser les paquets de cette distribution ; le 
 
 ```bash
 sudo apt update
-sudo apt install build-essential cmake qtbase5-dev libqt5serialbus5-dev libqt5serialbus5-plugins network-manager can-utils
+sudo apt install build-essential cmake qtbase5-dev libqt5sql5-sqlite libqt5serialbus5-dev libqt5serialbus5-plugins network-manager can-utils
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j2
 ctest --test-dir build --output-on-failure
@@ -66,7 +66,7 @@ Un diagnostic sans écriture des réglages est disponible après compilation :
 ./build/can_diagnostic can0
 ```
 
-Il ouvre un cache temporaire indépendant, émet uniquement les demandes RTR de démarrage, affiche les transitions de synchronisation et termine après 18 secondes. Le code de retour est 0 si la configuration est synchronisée à la fin, 1 sinon. Il n’appelle ni sauvegarde des réglages, ni commande de relais, ni activation de maintenance.
+Il ouvre un cache JSON et une base SQLite temporaires indépendants (un second argument peut indiquer une base SQLite à conserver), émet uniquement les demandes RTR de démarrage, affiche les transitions de synchronisation et termine après 18 secondes. Le code de retour est 0 si la configuration est synchronisée à la fin, 1 sinon. Il n’appelle ni sauvegarde des réglages, ni commande de relais, ni activation de maintenance.
 
 ## Comportement CAN
 
@@ -85,10 +85,10 @@ La signature seule n’est pas un accusé de réception transactionnel et peut a
 
 ## Fichier JSON des réglages
 
-Le cache est enregistré atomiquement dans `settings.json`, dans le dossier `QStandardPaths::AppConfigLocation` (habituellement `~/.config/Frigo/IHM/settings.json` sous Linux). Le PIN reste distinct dans QSettings. Pour choisir le fichier :
+Le cache est enregistré atomiquement dans `settings.json`, dans votre dossier personnel (`~/settings.json` sous Linux). Le PIN reste distinct dans QSettings. Pour choisir le fichier :
 
 ```bash
-./build/frigo --fullscreen --interface can0 --settings-file "$HOME/.config/frigo/settings.json"
+./build/frigo --fullscreen --interface can0 --settings-file "$HOME/settings.json"
 ```
 
 Le JSON contient `version: 1`, `commit_signature` et `settings`, un objet dont les clés `300` à `30c` contiennent les 13 entiers bruts CAN (avant conversion en unités affichées). Un fichier incomplet, invalide ou dont la signature ne correspond pas aux valeurs déclenche une lecture complète. L’ancien cache QSettings n’est plus utilisé : le premier lancement relit la carte.
@@ -96,6 +96,51 @@ Le JSON contient `version: 1`, `commit_signature` et `settings`, un objet dont l
 Les modifications sont comparées au dernier jeu confirmé chargé de ce fichier. Seuls les paramètres différents partent, puis le commit `0x30F`, puis une lecture RTR de vérification. Le JSON est remplacé uniquement après confirmation : un échec CAN conserve les valeurs précédentes. Une erreur d’écriture JSON est affichée et impose une resynchronisation. Ne pas modifier le fichier pendant l’exécution de l’IHM.
 
 Toutes les trames émises par cette application sont espacées de 500 ms. Le délai de synchronisation inclut la durée de la file d’envoi puis 5 secondes de réponse ; une lecture des 13 paramètres prend au moins 6,5 secondes. Les lectures peuvent être retentées deux fois, jamais les écritures automatiquement. La simulation ne touche pas au JSON réel ; un fichier de simulation peut être fourni explicitement avec `--settings-file`.
+
+## Historique SQLite et relance CAN
+
+Par défaut, le JSON est `~/settings.json` et la base SQLite est `~/frigo.sqlite`. Ces chemins concernent l’utilisateur qui lance l’application. Le fichier SQLite est créé automatiquement et conservé entre les lancements. Les anciens réglages dans `~/.config/Frigo/IHM/settings.json` peuvent être copiés vers `~/settings.json` application fermée ; sinon, une lecture complète de la carte reconstitue le nouveau fichier.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j2
+./build/frigo --fullscreen --interface can0 \
+  --settings-file "$HOME/settings.json" \
+  --database "$HOME/frigo.sqlite" --can-timeout 10
+```
+
+Qt SQL et son pilote SQLite sont requis : `libqt5sql5-sqlite` pour Qt 5, ou `libqt6sql6-sqlite` pour Qt 6. Le pilote Qt 6 a été trouvé sur `terminalBus`. Sous Windows, inclure le plugin `sqldrivers/qsqlite.dll` dans le déploiement.
+
+L’historique enregistre chaque trame de données standard reçue (sans échos locaux), y compris les répétitions, dans `can_frames(seq, timestamp_ms, can_id, payload)`. `timestamp_ms` est l’instant de réception par l’application, en millisecondes depuis l’époque Unix. Les valeurs décodées associées sont dans `measurements(frame_seq, name, value, text)` :
+
+- `temp_cap1`, `temp_cap2`, `temp_cap3`, `temp_eva` en °C ; `battery` en V.
+- `door_open` (1 ouverte, 0 fermée) et `door_raw` (octet reçu).
+- `fan_1` à `fan_5`, `defrost_fan`, `lamp`, `compressor`, `door_relay` (0/1).
+- `error` : code numérique et description dans `text`.
+- `temperature_mean` : moyenne actualisée à chaque réception CAP1, CAP2 ou CAP3 ; `NULL` si l’une des trois mesures manque ou date de 6 secondes ou plus.
+
+Les trames mal formées restent dans les données brutes, sans valeur décodée inventée. Chaque trame et ses mesures sont écrites dans une transaction, sur un thread séparé, avec le journal SQLite WAL. Une fermeture normale termine les écritures en attente. Les erreurs SQLite sont signalées dans le statut et les logs. Il n’y a pas de purge automatique : prévoir l’espace disque pour la durée d’historique souhaitée. L’écran Historique existant utilise encore ses mesures en mémoire ; cette base permet la conservation et l’exploitation des données.
+
+Exemple de lecture (outil `sqlite3`) :
+
+```sql
+SELECT datetime(f.timestamp_ms/1000.0, 'unixepoch') AS utc,
+       m.name, m.value, m.text
+FROM measurements m JOIN can_frames f ON f.seq=m.frame_seq
+ORDER BY f.seq DESC LIMIT 100;
+```
+
+Sur Linux, après 10 secondes sans trame CAN reçue, l’application suspend ses envois, ferme sa connexion SocketCAN et lance successivement `sudo -n /sbin/ip link set can0 down` puis `sudo -n /sbin/ip link set can0 up`. Le chemin de `ip` est détecté automatiquement ; `--interface` choisit l’interface. Chaque commande a un délai maximal de 5 secondes. `up` est tenté même si `down` échoue. Après réussite de `up`, la connexion est recréée et la signature est relue. Une sauvegarde interrompue n’est jamais réémise automatiquement.
+
+Au moins 30 secondes séparent deux tentatives. `--can-timeout 0` désactive cette fonction ; une autre valeur positive ajuste le seuil en secondes. Les trames de données et RTR reçues entretiennent le compteur, jamais les échos locaux ni les trames d’erreur. La simulation et `can_diagnostic` ne relancent pas le réseau.
+
+`sudo -n` doit pouvoir exécuter les commandes sans demander de mot de passe. Sur `terminalBus`, `sudo -n -l` a confirmé que c’est déjà autorisé pour `nextronic` : aucune modification sudoers n’a été faite. Pour une nouvelle installation uniquement, un administrateur peut autoriser les deux commandes exactes avec `sudo visudo -f /etc/sudoers.d/frigo-can` :
+
+```sudoers
+nextronic ALL=(root) NOPASSWD: /sbin/ip link set can0 down, /sbin/ip link set can0 up
+```
+
+Adapter l’utilisateur et le chemin renvoyé par `command -v ip`. L’application continue de fonctionner comme utilisateur normal et ne demande pas de mot de passe dans l’interface. Documentation : [connexion SQL et threads Qt](https://doc.qt.io/qt-6/qsqldatabase.html).
 
 ## Réseau et clavier
 
