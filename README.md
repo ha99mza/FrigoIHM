@@ -66,7 +66,7 @@ Un diagnostic sans écriture des réglages est disponible après compilation :
 ./build/can_diagnostic can0
 ```
 
-Il ouvre un cache JSON et une base SQLite temporaires indépendants (un second argument peut indiquer une base SQLite à conserver), émet uniquement les demandes RTR de démarrage, affiche les transitions de synchronisation et termine après 18 secondes. Le code de retour est 0 si la configuration est synchronisée à la fin, 1 sinon. Il n’appelle ni sauvegarde des réglages, ni commande de relais, ni activation de maintenance.
+Il ouvre un cache JSON et une base SQLite temporaires indépendants (un second argument peut indiquer une base SQLite à conserver), émet uniquement les demandes RTR de démarrage, affiche les transitions de synchronisation et termine après 35 secondes (pour inclure le premier relevé SQLite à 30 secondes). Le code de retour est 0 si la configuration est synchronisée à la fin, 1 sinon. Il n’appelle ni sauvegarde des réglages, ni commande de relais, ni activation de maintenance.
 
 ## Comportement CAN
 
@@ -111,23 +111,27 @@ cmake --build build -j2
 
 Qt SQL et son pilote SQLite sont requis : `libqt5sql5-sqlite` pour Qt 5, ou `libqt6sql6-sqlite` pour Qt 6. Le pilote Qt 6 a été trouvé sur `terminalBus`. Sous Windows, inclure le plugin `sqldrivers/qsqlite.dll` dans le déploiement.
 
-L’historique enregistre chaque trame de données standard reçue (sans échos locaux), y compris les répétitions, dans `can_frames(seq, timestamp_ms, can_id, payload)`. `timestamp_ms` est l’instant de réception par l’application, en millisecondes depuis l’époque Unix. Les valeurs décodées associées sont dans `measurements(frame_seq, name, value, text)` :
+L’historique enregistre **une ligne toutes les 30 secondes**, dans la table `releves`. La première ligne arrive 30 secondes après l’ouverture de la base. Les trames CAN mettent seulement à jour les valeurs en mémoire entre deux relevés : elles ne produisent plus une écriture SQLite chacune.
 
-- `temp_cap1`, `temp_cap2`, `temp_cap3`, `temp_eva` en °C ; `battery` en V.
-- `door_open` (1 ouverte, 0 fermée) et `door_raw` (octet reçu).
-- `fan_1` à `fan_5`, `defrost_fan`, `lamp`, `compressor`, `door_relay` (0/1).
-- `error` : code numérique et description dans `text`.
-- `temperature_mean` : moyenne actualisée à chaque réception CAP1, CAP2 ou CAP3 ; `NULL` si l’une des trois mesures manque ou date de 6 secondes ou plus.
+| Colonnes | Contenu |
+| --- | --- |
+| `id`, `timestamp_ms`, `date_utc` | Identifiant et date UTC du relevé |
+| `temp_cap1`, `temp_cap2`, `temp_cap3`, `temp_eva` | Dernières températures en °C |
+| `batterie` | Tension en V |
+| `porte_ouverte` | 1 ouverte, 0 fermée |
+| `ventilateur_1` à `ventilateur_5` | État des cinq ventilateurs, 0/1 |
+| `ventilateur_degivrage`, `lampe`, `compresseur`, `relais_porte` | État des sorties, 0/1 |
+| `temperature_moyenne` | Moyenne des dernières valeurs CAP1, CAP2 et CAP3 |
+| `erreur` | Erreurs reçues depuis le dernier relevé réussi, avec date, code et description |
 
-Les trames mal formées restent dans les données brutes, sans valeur décodée inventée. Chaque trame et ses mesures sont écrites dans une transaction, sur un thread séparé, avec le journal SQLite WAL. Une fermeture normale termine les écritures en attente. Les erreurs SQLite sont signalées dans le statut et les logs. Il n’y a pas de purge automatique : prévoir l’espace disque pour la durée d’historique souhaitée. L’écran Historique existant utilise encore ses mesures en mémoire ; cette base permet la conservation et l’exploitation des données.
+Chaque valeur absente, invalide ou âgée de 6 secondes ou plus au moment du relevé est `NULL`. La moyenne est `NULL` si une des trois sondes n’est pas récente. Il s’agit d’un instantané toutes les 30 secondes, pas de la moyenne temporelle des 30 secondes. La colonne `erreur` est `NULL` lorsqu’aucune erreur n’a été reçue pendant l’intervalle ; elle ne représente pas l’état d’acquittement des alarmes.
 
-Exemple de lecture (outil `sqlite3`) :
+La table est ajoutée automatiquement à la base existante. Les anciennes tables `can_frames` et `measurements`, si elles existent, restent consultables mais ne reçoivent plus de données. Elles ne sont ni effacées ni converties rétroactivement. L’écriture se fait sur le thread SQLite avec WAL, chaque ligne étant atomique. Une erreur d’écriture est signalée ; les erreurs CAN en attente sont conservées pour le relevé suivant. L’arrêt de l’application n’ajoute pas de ligne partielle avant l’échéance suivante. Il n’y a pas de purge automatique. L’écran Historique existant utilise encore ses mesures en mémoire.
 
-```sql
-SELECT datetime(f.timestamp_ms/1000.0, 'unixepoch') AS utc,
-       m.name, m.value, m.text
-FROM measurements m JOIN can_frames f ON f.seq=m.frame_seq
-ORDER BY f.seq DESC LIMIT 100;
+Exemple de lecture avec `sqlite3` :
+
+```bash
+sqlite3 -header -column "$HOME/frigo.sqlite" 'SELECT * FROM releves ORDER BY id DESC LIMIT 10;'
 ```
 
 Sur Linux, après 10 secondes sans trame CAN reçue, l’application suspend ses envois, ferme sa connexion SocketCAN et lance successivement `sudo -n /sbin/ip link set can0 down` puis `sudo -n /sbin/ip link set can0 up`. Le chemin de `ip` est détecté automatiquement ; `--interface` choisit l’interface. Chaque commande a un délai maximal de 5 secondes. `up` est tenté même si `down` échoue. Après réussite de `up`, la connexion est recréée et la signature est relue. Une sauvegarde interrompue n’est jamais réémise automatiquement.

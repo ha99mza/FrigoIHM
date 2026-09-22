@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
             qInfo().noquote() << QString::number(0x300 + i, 16) << controller.config[i];
     });
     QTimer::singleShot(0, &controller, &Controller::start);
-    QTimer::singleShot(18000, &app, [&] {
+    QTimer::singleShot(35000, &app, [&] {
         qInfo() << "FINAL synced=" << controller.synced << "mean=" << controller.mean();
         app.exit(controller.synced && !storageFailed ? 0 : 1);
     });

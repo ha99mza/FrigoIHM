@@ -12,48 +12,65 @@ class StorageTests : public QObject {
 private slots:
  void persistedTelemetry(){
   QTemporaryDir dir;auto path=dir.filePath("history.sqlite");
+  HistoryWriter writer;writer.open(path);QSignalSpy errors(&writer,&HistoryWriter::error);
+  QCOMPARE(writer.sampleTimer->interval(),30000);writer.sampleTimer->stop();
+  writer.append(0x100,QByteArray::fromHex("1f010000"),30000);
+  writer.append(0x101,QByteArray::fromHex("1c010000"),30001);
+  writer.append(0x102,QByteArray::fromHex("25010000"),30002);
+  writer.append(0x103,QByteArray::fromHex("83ffffff"),30003);
+  writer.append(0x104,QByteArray::fromHex("9d2a"),30004);
+  writer.append(0x105,QByteArray::fromHex("03"),30005);
+  writer.append(0x106,QByteArray::fromHex("15"),30006);
+  writer.append(0x107,QByteArray::fromHex("06"),30007);
+  writer.append(1,QByteArray::fromHex("52"),15000);
+  writer.append(1,QByteArray::fromHex("53"),20000);
+  writer.append(0x100,QByteArray::fromHex("00"),30008); // Malformed frame cannot overwrite CAP1.
   {
-   CanHistory history(path);QSignalSpy errors(&history,&CanHistory::error);
-   history.append(0x100,QByteArray::fromHex("1f010000"),10000);
-   history.append(0x101,QByteArray::fromHex("1c010000"),10001);
-   history.append(0x102,QByteArray::fromHex("25010000"),10002);
-   history.append(0x103,QByteArray::fromHex("83ffffff"),10003);
-   history.append(0x104,QByteArray::fromHex("9d2a"),10004);
-   history.append(0x105,QByteArray::fromHex("03"),10005);
-   history.append(0x106,QByteArray::fromHex("15"),10006);
-   history.append(0x107,QByteArray::fromHex("06"),10007);
-   history.append(1,QByteArray::fromHex("52"),10008);
-   history.append(0x100,QByteArray::fromHex("0000"),17000); // Other sensors are stale.
-   history.append(0x100,QByteArray::fromHex("00"),17001); // Raw retained, no decoded value.
-  } // Destruction must drain queued records.
-  const auto name=QString("storage-test");
-  {
-   auto db=QSqlDatabase::addDatabase("QSQLITE",name);db.setDatabaseName(path);QVERIFY(db.open());
-   QSqlQuery q(db);QVERIFY(q.exec("SELECT count(*) FROM can_frames"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),11);
-   auto value=[&](QString key,int seq)->QVariant {
-    q.prepare("SELECT value FROM measurements WHERE name=? AND frame_seq=?");q.addBindValue(key);q.addBindValue(seq);
-    if(!q.exec()||!q.next())return {};return q.value(0);
-   };
-   QCOMPARE(value("temp_cap1",1).toDouble(),28.7);QVERIFY(value("temperature_mean",1).isNull());
-   QVERIFY(qAbs(value("temperature_mean",3).toDouble()-28.8)<1e-8);
-   QCOMPARE(value("temp_eva",4).toDouble(),-12.5);QCOMPARE(value("battery",5).toDouble(),10.909);
-   QCOMPARE(value("door_open",6).toInt(),1);
-   for(int i=1;i<=5;++i)QCOMPARE(value(QString("fan_%1").arg(i),7).toInt(),i%2);
-   QCOMPARE(value("lamp",8).toInt(),0);QCOMPARE(value("compressor",8).toInt(),1);
-   QCOMPARE(value("defrost_fan",8).toInt(),1);QCOMPARE(value("door_relay",8).toInt(),0);
-   QCOMPARE(value("error",9).toInt(),0x52);QVERIFY(value("temperature_mean",10).isNull());
-   QVERIFY(q.exec("SELECT count(*) FROM measurements WHERE frame_seq=11"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),0);
-   QVERIFY(q.exec("SELECT timestamp_ms,hex(payload) FROM can_frames WHERE seq=1"));QVERIFY(q.next());QCOMPARE(q.value(0).toLongLong(),qint64(10000));QCOMPARE(q.value(1).toString(),QString("1F010000"));
-   db.close();
+   QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT count(*) FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),0);
   }
-  QSqlDatabase::removeDatabase(name);
-  // Reopening must append rather than truncate.
-  {CanHistory history(path);history.append(0x105,QByteArray::fromHex("02"),18000);}
+  writer.snapshot(30010);
   {
-   auto db=QSqlDatabase::addDatabase("QSQLITE",name);db.setDatabaseName(path);QVERIFY(db.open());
-   QSqlQuery q(db);QVERIFY(q.exec("SELECT count(*) FROM can_frames"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),12);db.close();
+   QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT * FROM releves"));QVERIFY(q.next());
+   QCOMPARE(q.value("temp_cap1").toDouble(),28.7);
+   QCOMPARE(q.value("temp_eva").toDouble(),-12.5);QCOMPARE(q.value("batterie").toDouble(),10.909);
+   QVERIFY(qAbs(q.value("temperature_moyenne").toDouble()-28.8)<1e-8);
+   QCOMPARE(q.value("porte_ouverte").toInt(),1);
+   for(int i=1;i<=5;++i)QCOMPARE(q.value(QString("ventilateur_%1").arg(i)).toInt(),i%2);
+   QCOMPARE(q.value("lampe").toInt(),0);QCOMPARE(q.value("compresseur").toInt(),1);
+   QCOMPARE(q.value("ventilateur_degivrage").toInt(),1);QCOMPARE(q.value("relais_porte").toInt(),0);
+   QVERIFY(q.value("erreur").toString().contains("0x52"));QVERIFY(q.value("erreur").toString().contains("0x53"));
   }
-  QSqlDatabase::removeDatabase(name);
+  writer.snapshot(60010);
+  {
+   QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT * FROM releves ORDER BY id DESC"));QVERIFY(q.next());
+   QVERIFY(q.value("temp_cap1").isNull());QVERIFY(q.value("temperature_moyenne").isNull());
+   QVERIFY(q.value("porte_ouverte").isNull());QVERIFY(q.value("erreur").isNull());
+  }
+  QVERIFY(errors.isEmpty());writer.close();
+  HistoryWriter reopened;reopened.open(path);reopened.sampleTimer->stop();
+  {QSqlQuery q(reopened.db);QVERIFY(q.exec("SELECT count(*) FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),2);}
+  reopened.close();
+ }
+ void timerWritesAtThirtySeconds(){
+  QTemporaryDir dir;HistoryWriter writer;writer.open(dir.filePath("timed.sqlite"));
+  QSignalSpy tick(writer.sampleTimer,&QTimer::timeout);QElapsedTimer elapsed;elapsed.start();
+  writer.append(0x100,QByteArray::fromHex("1f010000"),QDateTime::currentMSecsSinceEpoch());
+  {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT count(*) FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),0);}
+  QTRY_COMPARE_WITH_TIMEOUT(tick.size(),1,32000);QVERIFY(elapsed.elapsed()>=29900);
+  {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT count(*) FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),1);}
+  writer.close();
+ }
+ void preservesLegacyTables(){
+  QTemporaryDir dir;const auto path=dir.filePath("old.sqlite");
+  {
+   auto db=QSqlDatabase::addDatabase("QSQLITE","legacy");db.setDatabaseName(path);QVERIFY(db.open());
+   QSqlQuery q(db);QVERIFY(q.exec("CREATE TABLE can_frames(seq INTEGER PRIMARY KEY,payload BLOB)"));
+   QVERIFY(q.exec("INSERT INTO can_frames VALUES(1,X'0102')"));
+  }
+  QSqlDatabase::removeDatabase("legacy");
+  HistoryWriter writer;writer.open(path);writer.sampleTimer->stop();writer.snapshot(30000);
+  {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT hex(payload) FROM can_frames"));QVERIFY(q.next());QCOMPARE(q.value(0).toString(),QString("0102"));}
+  writer.close();
  }
  void inaccessibleDatabaseReportsError(){
   QTemporaryDir dir;CanHistory history(dir.path());QSignalSpy errors(&history,&CanHistory::error);

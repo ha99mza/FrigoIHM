@@ -2,6 +2,9 @@
 #include <QObject>
 #include <QThread>
 #include <QSqlDatabase>
+#include <QTimer>
+#include <QVariant>
+#include <QStringList>
 #include <array>
 
 // All SQL work and the connection live in the worker thread.
@@ -14,9 +17,13 @@ public:
 signals:
  void error(QString message);
 private:
+ friend class StorageTests;
  QSqlDatabase db;
- std::array<double,3> caps{};
- std::array<qint64,3> seen{};
+ QTimer *sampleTimer=nullptr;
+ std::array<QVariant,15> values{};
+ std::array<qint64,15> seen{};
+ QStringList errors;
+ void snapshot(qint64 timestamp);
 };
 class CanHistory : public QObject {
  Q_OBJECT
