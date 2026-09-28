@@ -10,6 +10,25 @@
 class StorageTests : public QObject {
  Q_OBJECT
 private slots:
+ void loadsPersistedMeansAndRefreshes(){
+  QTemporaryDir dir;HistoryWriter writer;writer.open(dir.filePath("history.sqlite"));writer.sampleTimer->stop();
+  auto now=QDateTime::currentMSecsSinceEpoch();
+  auto insert=[&](qint64 time,QVariant value){
+   QSqlQuery q(writer.db);q.prepare("INSERT INTO releves(timestamp_ms,date_utc,temperature_moyenne,temp_cap1) VALUES(?,'test',?,99)");
+   q.addBindValue(time);q.addBindValue(value);QVERIFY(q.exec());
+  };
+  insert(now-30000,4.5);insert(now-90000,2.5);insert(now-60000,QVariant());
+  insert(now-qint64(8)*86400000,8.0);insert(now+86400000,9.0);
+  QSignalSpy loaded(&writer,&HistoryWriter::temperaturesLoaded);
+  writer.readTemperatures();QCOMPARE(loaded.size(),1);
+  auto points=qvariant_cast<QVector<QPointF>>(loaded.takeFirst()[0]);QCOMPARE(points.size(),3);
+  QCOMPARE(points[0].y(),2.5);QVERIFY(std::isnan(points[1].y()));QCOMPARE(points[2].y(),4.5);
+  QCOMPARE(points[0].x(),(now-90000)/1000.0);
+  for(int i=0;i<3;++i)writer.append(0x100+i,Protocol::encode(30+i*10,2),now);
+  writer.snapshot(now);QCOMPARE(loaded.size(),1);
+  points=qvariant_cast<QVector<QPointF>>(loaded[0][0]);QCOMPARE(points.size(),4);QCOMPARE(points.last().y(),4.0);
+  writer.close();
+ }
  void persistedTelemetry(){
   QTemporaryDir dir;auto path=dir.filePath("history.sqlite");
   HistoryWriter writer;writer.open(path);QSignalSpy errors(&writer,&HistoryWriter::error);

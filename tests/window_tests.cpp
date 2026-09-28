@@ -1,6 +1,8 @@
 #include "window.h"
 #include <QSignalSpy>
 #include <QtTest>
+#include <QTemporaryDir>
+#include <QSqlQuery>
 class WindowTests : public QObject {
     Q_OBJECT
     void draw(Window &w) {
@@ -13,6 +15,24 @@ class WindowTests : public QObject {
         draw(w);
     }
   private slots:
+    void historyRestoresSqliteInsteadOfLiveMemory() {
+        QTemporaryDir dir;const auto path=dir.filePath("history.sqlite");
+        {HistoryWriter writer;writer.open(path);writer.close();}
+        {
+            auto db=QSqlDatabase::addDatabase("QSQLITE","window-history");db.setDatabaseName(path);QVERIFY(db.open());
+            QSqlQuery q(db);q.prepare("INSERT INTO releves(timestamp_ms,date_utc,temperature_moyenne) VALUES(?,'test',7.25)");
+            q.addBindValue(QDateTime::currentMSecsSinceEpoch()-30000);QVERIFY(q.exec());
+        }
+        QSqlDatabase::removeDatabase("window-history");
+        CanHistory history(path);Controller c(true,"test");Window w(&c,&history);
+        QTRY_COMPARE(w.samples.size(),1);QCOMPARE(w.samples[0].y(),7.25);
+        for(int i=0;i<3;++i)c.receive(0x100+i,Protocol::encode(990,2));
+        QTest::qWait(1100);QCOMPARE(w.samples.size(),1);QCOMPARE(w.samples[0].y(),7.25);
+        w.preview("hist");w.show();draw(w);
+        for(auto range:{"1h","24h","7j"}){w.range=range;draw(w);QCOMPARE(w.samples[0].y(),7.25);}
+        // A new window restores the same persisted data independently of live CAN.
+        Window reopened(&c,&history);QTRY_COMPARE(reopened.samples.size(),1);QCOMPARE(reopened.samples[0].y(),7.25);
+    }
     void navigationPinAndTheme() {
         Controller c(true, "test");
         Window w(&c);

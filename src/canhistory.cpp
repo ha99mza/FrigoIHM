@@ -7,6 +7,8 @@
 #include <QUuid>
 #include <QVariant>
 #include <QDateTime>
+#include <limits>
+#include <cmath>
 
 void HistoryWriter::open(const QString &path) {
  if(!QDir().mkpath(QFileInfo(path).absolutePath())){emit error("Dossier SQLite inaccessible : "+path);return;}
@@ -59,6 +61,22 @@ void HistoryWriter::snapshot(qint64 timestamp){
  q.addBindValue(errors.isEmpty()?QVariant():QVariant(errors.join("\n")));
  if(!q.exec()){emit error(q.lastError().text());return;}
  errors.clear();
+ readTemperatures();
+}
+void HistoryWriter::readTemperatures(){
+ if(!db.isOpen())return;
+ const auto now=QDateTime::currentMSecsSinceEpoch();
+ QSqlQuery q(db);
+ q.prepare("SELECT timestamp_ms,temperature_moyenne FROM releves WHERE timestamp_ms>=? AND timestamp_ms<=? ORDER BY timestamp_ms,id");
+ q.addBindValue(now-qint64(7)*86400000);q.addBindValue(now);
+ if(!q.exec()){emit error(q.lastError().text());return;}
+ QVector<QPointF> points;
+ while(q.next()){
+  bool valid=false;const double value=q.value(1).toDouble(&valid);
+  points.append({q.value(0).toLongLong()/1000.0,
+   !q.value(1).isNull()&&valid&&std::isfinite(value)?value:std::numeric_limits<double>::quiet_NaN()});
+ }
+ emit temperaturesLoaded(points);
 }
 void HistoryWriter::close(){
  if(sampleTimer)sampleTimer->stop();
@@ -66,8 +84,10 @@ void HistoryWriter::close(){
  auto name=db.connectionName();db.close();db=QSqlDatabase();QSqlDatabase::removeDatabase(name);
 }
 CanHistory::CanHistory(QString path,QObject *parent):QObject(parent),writer(new HistoryWriter){
+ qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
  writer->moveToThread(&thread);
  connect(writer,&HistoryWriter::error,this,&CanHistory::error);
+ connect(writer,&HistoryWriter::temperaturesLoaded,this,&CanHistory::temperaturesLoaded);
  connect(&thread,&QThread::finished,writer,&QObject::deleteLater);
  thread.start();QMetaObject::invokeMethod(writer,[this,path]{writer->open(path);},Qt::QueuedConnection);
 }
@@ -78,4 +98,7 @@ CanHistory::~CanHistory(){
 }
 void CanHistory::append(quint32 id,const QByteArray &p,qint64 timestamp){
  QMetaObject::invokeMethod(writer,[this,id,p,timestamp]{writer->append(id,p,timestamp);},Qt::QueuedConnection);
+}
+void CanHistory::loadTemperatures(){
+ QMetaObject::invokeMethod(writer,[this]{writer->readTemperatures();},Qt::QueuedConnection);
 }

@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
 #endif
     controller.alarmStart = parser.value("alarm-start");
     controller.alarmStop = parser.value("alarm-stop");
-    Window window(&controller);
+    Window window(&controller,history.get());
     if (parser.isSet("fullscreen"))
         window.showFullScreen();
     else

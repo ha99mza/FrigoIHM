@@ -1,6 +1,7 @@
 #pragma once
 #include "controller.h"
 #include "network.h"
+#include "canhistory.h"
 #include <QPainter>
 #include <QWidget>
 #include <functional>
@@ -8,7 +9,7 @@
 class Window : public QWidget {
     Q_OBJECT
   public:
-    explicit Window(Controller *controller);
+    explicit Window(Controller *controller, CanHistory *history=nullptr);
     void preview(const QString &screen);
 
   protected:
@@ -26,6 +27,7 @@ class Window : public QWidget {
         std::function<void()> action;
     };
     Controller *c;
+    CanHistory *history;
     Network network;
     Protocol::Config draft{};
     QVector<Hit> hits;

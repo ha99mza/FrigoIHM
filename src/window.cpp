@@ -46,7 +46,7 @@ struct PainterScope {
     }
 };
 } // namespace
-Window::Window(Controller *controller) : c(controller) {
+Window::Window(Controller *controller, CanHistory *storage) : c(controller), history(storage) {
     for (auto file : {"IBMPlexSans-Regular.ttf", "IBMPlexMono-Regular.ttf", "IBMPlexMono-Medium.ttf",
                       "IBMPlexMono-SemiBold.ttf"})
         QFontDatabase::addApplicationFont(":/fonts/" + QString(file));
@@ -86,10 +86,14 @@ Window::Window(Controller *controller) : c(controller) {
         networkMessage = message;
         update();
     });
+    if(history){
+        connect(history,&CanHistory::temperaturesLoaded,this,[this](QVector<QPointF> points){
+            samples=std::move(points);update();
+        });
+        history->loadTemperatures();
+    }
     auto timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, [this] {
-        if (std::isfinite(c->mean()))
-            samples.append({double(QDateTime::currentSecsSinceEpoch()), c->mean()});
         while (!samples.isEmpty() && samples.first().x() < QDateTime::currentSecsSinceEpoch() - 7 * 86400)
             samples.removeFirst();
         update();
@@ -324,7 +328,7 @@ void Window::historyPage(int top, int height) {
                                                                           : range == "24h" ? 86400
                                                                                            : 604800);
     QVector<QPointF> plotted = samples;
-    if (c->simulation) {
+    if (c->simulation && !history) {
         // The reference's demo trace is shown only in the explicitly labelled simulator.
         plotted.clear();
         double amplitude = range == "1h" ? .7 : range == "24h" ? 1.1 : 1.4;
@@ -336,7 +340,7 @@ void Window::historyPage(int top, int height) {
     }
     double low = -2, high = 8;
     for (auto s : plotted)
-        if (s.x() >= start) {
+        if (s.x() >= start && s.x()<=end && std::isfinite(s.y())) {
             low = qMin(low, std::floor(s.y() - 1));
             high = qMax(high, std::ceil(s.y() + 1));
         }
@@ -374,16 +378,21 @@ void Window::historyPage(int top, int height) {
         p->fillPath(area, color);
     };
     for (auto s : plotted) {
-        if (s.x() < start)
+        if (s.x() < start || s.x()>end)
             continue;
+        if(!std::isfinite(s.y())){
+            fillSegment();segment.clear();first=true;continue;
+        }
         auto pt = point(s);
-        if (first || (!c->simulation && s.x() - previous > 6)) {
+        if (first || ((history || !c->simulation) && s.x() - previous > 45)) {
             fillSegment();
             segment.clear();
             path.moveTo(pt);
         } else
             path.lineTo(pt);
         segment.append(pt);
+        p->setPen(QPen(accent, 2.5));
+        p->drawPoint(pt);
         first = false;
         previous = s.x();
         sum += s.y();
@@ -399,7 +408,7 @@ void Window::historyPage(int top, int height) {
     for (int i = 0; i <= 5; ++i)
         text({plot.left(), plot.top() + plot.height() * i / 5 - 8, 40, 16},
              QString::number(high - (high - low) * i / 5, 'g', 2), 12, muted, 400, true);
-    if (first)
+    if (!count)
         text(plot, "En attente de mesures", 14, muted, 400, false, Qt::AlignCenter);
     QStringList labels = range == "1h"    ? QStringList{"-60m", "-48m", "-36m", "-24m", "-12m", "now"}
                          : range == "24h" ? QStringList{"-24h", "-19h", "-14h", "-10h", "-5h", "now"}
