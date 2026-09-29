@@ -3,13 +3,116 @@
 #include <QSqlQuery>
 #include <QSignalSpy>
 #include <QDir>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QJsonDocument>
+#include <QFile>
 #include "canhistory.h"
 #include "canrecovery.h"
 #include "controller.h"
 
+class FakeCloud : public QObject {
+public:
+ QTcpServer server;
+ QList<QByteArray> requests;
+ QList<QByteArray> responses;
+ QList<int> statuses;
+ FakeCloud(){
+  server.listen(QHostAddress::LocalHost);
+  connect(&server,&QTcpServer::newConnection,this,[this]{
+   auto socket=server.nextPendingConnection();
+   connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+   connect(socket,&QTcpSocket::readyRead,this,[this,socket]{
+    QByteArray bytes=socket->property("request").toByteArray()+socket->readAll();socket->setProperty("request",bytes);
+    int split=bytes.indexOf("\r\n\r\n");if(split<0)return;
+    int size=0;for(auto line:bytes.left(split).split('\n'))if(line.toLower().startsWith("content-length:"))size=line.mid(15).trimmed().toInt();
+    if(bytes.size()<split+4+size||socket->property("handled").toBool())return;
+    socket->setProperty("handled",true);requests.append(bytes);
+    auto body=responses.isEmpty()?QByteArray("{\"success\":true}"):responses.takeFirst();
+    auto status=statuses.isEmpty()?200:statuses.takeFirst();
+    socket->write("HTTP/1.1 "+QByteArray::number(status)+" Result\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "+QByteArray::number(body.size())+"\r\n\r\n"+body);
+    socket->disconnectFromHost();
+   });
+  });
+ }
+ QUrl url()const{return QUrl(QString("http://127.0.0.1:%1/event").arg(server.serverPort()));}
+ static QJsonObject body(QByteArray request){return QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n")+4)).object();}
+};
+
 class StorageTests : public QObject {
  Q_OBJECT
 private slots:
+ void cloudRejectsUnconfirmedResponses_data(){
+  QTest::addColumn<int>("status");QTest::addColumn<QByteArray>("response");
+  QTest::newRow("HTTP failure despite success body")<<503<<QByteArray("{\"success\":true}");
+  QTest::newRow("credentials refused")<<401<<QByteArray("{\"success\":false}");
+  QTest::newRow("malformed JSON")<<200<<QByteArray("not json");
+  QTest::newRow("missing confirmation")<<200<<QByteArray("{}");
+ }
+ void cloudRejectsUnconfirmedResponses(){
+  QFETCH(int,status);QFETCH(QByteArray,response);
+  QTemporaryDir dir;auto config=dir.filePath("cloud.json");
+  {QFile f(config);QVERIFY(f.open(QIODevice::WriteOnly));f.write("{\"apiToken\":\"test\",\"serial\":\"test\",\"accessToken\":\"test\"}");}
+  FakeCloud server;server.statuses.append(status);server.responses.append(response);
+  HistoryWriter writer;writer.open(dir.filePath("test.sqlite"));writer.sampleTimer->stop();writer.cloudEndpoint=server.url();
+  writer.configureCloud(config);writer.snapshot(QDateTime::currentMSecsSinceEpoch());
+  QTRY_COMPARE(server.requests.size(),1);QTRY_VERIFY(!writer.reply);
+  {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT sent,last_http_status,next_retry_ms FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),0);QCOMPARE(q.value(1).toInt(),status);QVERIFY(q.value(2).toLongLong()>QDateTime::currentMSecsSinceEpoch());}
+  writer.close();
+ }
+ void cloudMigrationPreservesOldReadings(){
+  QTemporaryDir dir;const auto path=dir.filePath("legacy.sqlite");
+  {
+   auto db=QSqlDatabase::addDatabase("QSQLITE","old-cloud");db.setDatabaseName(path);QVERIFY(db.open());
+   QSqlQuery q(db);QVERIFY(q.exec("CREATE TABLE releves(id INTEGER PRIMARY KEY,timestamp_ms INTEGER,date_utc TEXT,temperature_moyenne REAL)"));
+   QVERIFY(q.exec("INSERT INTO releves VALUES(1,1000,'old',4.5)"));
+  }
+  QSqlDatabase::removeDatabase("old-cloud");
+  HistoryWriter writer;writer.open(path);QVERIFY(writer.db.isOpen());writer.sampleTimer->stop();
+  {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT temperature_moyenne,sent FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toDouble(),4.5);QCOMPARE(q.value(1).toInt(),0);}
+  writer.close();
+ }
+ void cloudRetriesStablePayloadAndImmediateErrors(){
+  QTemporaryDir dir;auto config=dir.filePath("cloud.json");
+  {QFile f(config);QVERIFY(f.open(QIODevice::WriteOnly));f.write("{\"apiToken\":\"test-api\",\"serial\":\"FRIGO-TEST\",\"accessToken\":\"test-device\"}");}
+  FakeCloud server;QVERIFY(server.server.isListening());server.responses.append("{\"success\":false}");
+  const auto path=dir.filePath("cloud.sqlite");
+  QString eventId;QByteArray original;
+  {
+   HistoryWriter writer;writer.open(path);writer.sampleTimer->stop();writer.cloudEndpoint=server.url();
+   writer.setCloudContext({{"settingsTempMax",5.0},{"settingsTempMin",2.0},{"settingsEvapMin",-15.0},{"maintenanceMode",true}});
+   auto now=QDateTime::currentMSecsSinceEpoch();for(int i=0;i<3;++i)writer.append(0x100+i,Protocol::encode(30+i*10,2),now);
+   writer.configureCloud(config);writer.snapshot(now);
+   QTRY_COMPARE(server.requests.size(),1);QTRY_VERIFY(!writer.reply);
+   {
+    QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT sent,event_id,next_retry_ms FROM releves"));QVERIFY(q.next());
+    QCOMPARE(q.value(0).toInt(),0);eventId=q.value(1).toString();QVERIFY(!eventId.isEmpty());QVERIFY(q.value(2).toLongLong()>now);
+   }
+   original=server.requests[0];QVERIFY(original.contains("Authorization: Bearer test-api"));QVERIFY(original.contains(eventId.toUtf8()));
+   auto body=FakeCloud::body(original);QCOMPARE(body["serial"].toString(),QString("FRIGO-TEST"));QCOMPARE(body["accessToken"].toString(),QString("test-device"));
+   auto data=body["data"].toObject();QCOMPARE(data["temperature"].toDouble(),4.0);QCOMPARE(data["tempSen1"].toDouble(),3.0);
+   QVERIFY(data["error"].isNull());QCOMPARE(data["settingsTempMax"].toDouble(),5.0);QVERIFY(data["maintenanceMode"].toBool());QVERIFY(data["datetime"].toString().endsWith('Z'));
+   // No parallel sender for the same database.
+   HistoryWriter other;other.open(path);other.sampleTimer->stop();other.cloudEndpoint=server.url();
+   QSignalSpy locked(&other,&HistoryWriter::error);other.configureCloud(config);QCOMPARE(locked.size(),1);QVERIFY(!other.network);other.close();
+   writer.close();
+  }
+  {
+   HistoryWriter writer;writer.open(path);writer.sampleTimer->stop();writer.cloudEndpoint=server.url();writer.configureCloud(config);
+   QCOMPARE(server.requests.size(),1); // Persisted backoff survives restart.
+   {QSqlQuery q(writer.db);QVERIFY(q.exec("UPDATE releves SET next_retry_ms=0"));}
+   writer.sendPending();QTRY_COMPARE(server.requests.size(),2);QTRY_VERIFY(!writer.reply);
+   QCOMPARE(FakeCloud::body(server.requests[1]),FakeCloud::body(original));QVERIFY(server.requests[1].contains(eventId.toUtf8()));
+   {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT sent,send_attempts FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),1);QCOMPARE(q.value(1).toInt(),2);}
+   writer.sendPending();QTest::qWait(600);QCOMPARE(server.requests.size(),2);
+   // Receipt of an error creates and sends a NEW row without waiting 30 seconds.
+   writer.append(1,QByteArray(1,char(0x52)),QDateTime::currentMSecsSinceEpoch());
+   QTRY_COMPARE(server.requests.size(),3);QTRY_VERIFY(!writer.reply);
+   QCOMPARE(FakeCloud::body(server.requests[2])["data"].toObject()["error"].toInt(),0x52);
+   {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT count(*) FROM releves WHERE sent=1"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),2);}
+   writer.close();
+  }
+ }
  void loadsPersistedMeansAndRefreshes(){
   QTemporaryDir dir;HistoryWriter writer;writer.open(dir.filePath("history.sqlite"));writer.sampleTimer->stop();
   auto now=QDateTime::currentMSecsSinceEpoch();
@@ -41,13 +144,13 @@ private slots:
   writer.append(0x105,QByteArray::fromHex("03"),30005);
   writer.append(0x106,QByteArray::fromHex("15"),30006);
   writer.append(0x107,QByteArray::fromHex("06"),30007);
-  writer.append(1,QByteArray::fromHex("52"),15000);
-  writer.append(1,QByteArray::fromHex("53"),20000);
+  writer.append(1,QByteArray::fromHex("52"),30009);
+  writer.append(1,QByteArray::fromHex("53"),30010);
   writer.append(0x100,QByteArray::fromHex("00"),30008); // Malformed frame cannot overwrite CAP1.
   {
-   QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT count(*) FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),0);
+   QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT count(*) FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),2);
   }
-  writer.snapshot(30010);
+  writer.snapshot(30011);
   {
    QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT * FROM releves"));QVERIFY(q.next());
    QCOMPARE(q.value("temp_cap1").toDouble(),28.7);
@@ -57,7 +160,8 @@ private slots:
    for(int i=1;i<=5;++i)QCOMPARE(q.value(QString("ventilateur_%1").arg(i)).toInt(),i%2);
    QCOMPARE(q.value("lampe").toInt(),0);QCOMPARE(q.value("compresseur").toInt(),1);
    QCOMPARE(q.value("ventilateur_degivrage").toInt(),1);QCOMPARE(q.value("relais_porte").toInt(),0);
-   QVERIFY(q.value("erreur").toString().contains("0x52"));QVERIFY(q.value("erreur").toString().contains("0x53"));
+   QVERIFY(q.value("erreur").toString().contains("0x52"));QCOMPARE(q.value("cloud_error").toInt(),0x52);
+   QVERIFY(q.next());QVERIFY(q.value("erreur").toString().contains("0x53"));
   }
   writer.snapshot(60010);
   {
@@ -67,7 +171,7 @@ private slots:
   }
   QVERIFY(errors.isEmpty());writer.close();
   HistoryWriter reopened;reopened.open(path);reopened.sampleTimer->stop();
-  {QSqlQuery q(reopened.db);QVERIFY(q.exec("SELECT count(*) FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),2);}
+  {QSqlQuery q(reopened.db);QVERIFY(q.exec("SELECT count(*) FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),4);}
   reopened.close();
  }
  void timerWritesAtThirtySeconds(){

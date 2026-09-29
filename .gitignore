@@ -3,3 +3,4 @@ dist/
 Lancer simulation.cmd
 captures/
 *.user
+cloud.json

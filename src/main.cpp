@@ -17,6 +17,7 @@ int main(int argc, char **argv) {
     parser.addOption({"interface", "Interface SocketCAN", "name", "can0"});
     parser.addOption({"settings-file", "Fichier JSON des reglages confirmes", "path"});
     parser.addOption({"database", "Historique SQLite (defaut : ~/frigo.sqlite)", "path"});
+    parser.addOption({"cloud-config", "Configuration du reporting cloud (defaut : ~/cloud.json)", "path"});
     parser.addOption({"can-timeout", "Relancer CAN apres N secondes sans trame (0 desactive)", "seconds", "10"});
     parser.addOption({"alarm-start", "Chemin de l’exécutable qui active l’alarme", "path"});
     parser.addOption({"alarm-stop", "Chemin de l’exécutable qui arrête l’alarme", "path"});
@@ -32,9 +33,23 @@ int main(int argc, char **argv) {
         if(path.startsWith("~/"))path=QDir::homePath()+path.mid(1);
         history=std::make_unique<CanHistory>(path);
         QObject::connect(&controller,&Controller::frameReceived,history.get(),&CanHistory::append);
+        QObject::connect(&controller,&Controller::changed,history.get(),[&]{
+            QJsonObject context{{"maintenanceMode",controller.maintenanceActive}};
+            if(controller.synced){
+                context.insert("settingsTempMax",controller.config[1]/10.0);
+                context.insert("settingsTempMin",controller.config[0]/10.0);
+                context.insert("settingsEvapMin",controller.config[2]/10.0);
+            }
+            history->setCloudContext(context);
+        });
         QObject::connect(history.get(),&CanHistory::error,&controller,[&](QString error){
             qCritical().noquote()<<"SQLite:"<<error;controller.status="Erreur historique SQLite : "+error;emit controller.changed();
         });
+        if(!controller.simulation){
+            QString file=parser.value("cloud-config");if(file.isEmpty())file=QDir::homePath()+"/cloud.json";
+            if(file.startsWith("~/"))file=QDir::homePath()+file.mid(1);
+            history->configureCloud(file);
+        }
     }
 #ifdef Q_OS_LINUX
     controller.enableRecovery(timeout*1000);

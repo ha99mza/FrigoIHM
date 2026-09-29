@@ -111,7 +111,7 @@ cmake --build build -j2
 
 Qt SQL et son pilote SQLite sont requis : `libqt5sql5-sqlite` pour Qt 5, ou `libqt6sql6-sqlite` pour Qt 6. Le pilote Qt 6 a été trouvé sur `terminalBus`. Sous Windows, inclure le plugin `sqldrivers/qsqlite.dll` dans le déploiement.
 
-L’historique enregistre **une ligne toutes les 30 secondes**, dans la table `releves`. La première ligne arrive 30 secondes après l’ouverture de la base. Les trames CAN mettent seulement à jour les valeurs en mémoire entre deux relevés : elles ne produisent plus une écriture SQLite chacune.
+L’historique enregistre **une ligne toutes les 30 secondes et une ligne supplémentaire à chaque erreur CAN**, dans la table `releves`. Le premier relevé périodique arrive 30 secondes après l’ouverture de la base ; une erreur peut produire un relevé avant ce délai. Les trames CAN mettent seulement à jour les valeurs en mémoire entre deux relevés : elles ne produisent plus une écriture SQLite chacune.
 
 | Colonnes | Contenu |
 | --- | --- |
@@ -122,9 +122,9 @@ L’historique enregistre **une ligne toutes les 30 secondes**, dans la table `r
 | `ventilateur_1` à `ventilateur_5` | État des cinq ventilateurs, 0/1 |
 | `ventilateur_degivrage`, `lampe`, `compresseur`, `relais_porte` | État des sorties, 0/1 |
 | `temperature_moyenne` | Moyenne des dernières valeurs CAP1, CAP2 et CAP3 |
-| `erreur` | Erreurs reçues depuis le dernier relevé réussi, avec date, code et description |
+| `erreur` | Erreur reçue, avec date, code et description ; en cas d’échec SQLite, les descriptions restent en attente |
 
-Chaque valeur absente, invalide ou âgée de 6 secondes ou plus au moment du relevé est `NULL`. La moyenne est `NULL` si une des trois sondes n’est pas récente. Il s’agit d’un instantané toutes les 30 secondes, pas de la moyenne temporelle des 30 secondes. La colonne `erreur` est `NULL` lorsqu’aucune erreur n’a été reçue pendant l’intervalle ; elle ne représente pas l’état d’acquittement des alarmes.
+Chaque valeur absente, invalide ou âgée de 6 secondes ou plus au moment du relevé est `NULL`. La moyenne est `NULL` si une des trois sondes n’est pas récente. Il s’agit d’un instantané toutes les 30 secondes, pas de la moyenne temporelle des 30 secondes. La colonne `erreur` est normalement `NULL` pour les relevés périodiques : une erreur est enregistrée immédiatement dans sa propre ligne. Elle ne représente pas l’état d’acquittement des alarmes.
 
 La table est ajoutée automatiquement à la base existante. Les anciennes tables `can_frames` et `measurements`, si elles existent, restent consultables mais ne reçoivent plus de données. Elles ne sont ni effacées ni converties rétroactivement. L’écriture se fait sur le thread SQLite avec WAL, chaque ligne étant atomique. Une erreur d’écriture est signalée ; les erreurs CAN en attente sont conservées pour le relevé suivant. L’arrêt de l’application n’ajoute pas de ligne partielle avant l’échéance suivante. Il n’y a pas de purge automatique. L’écran Historique lit `releves.temperature_moyenne` dans cette même base, en utilisant `timestamp_ms` pour dater les points.
 
@@ -145,6 +145,64 @@ nextronic ALL=(root) NOPASSWD: /sbin/ip link set can0 down, /sbin/ip link set ca
 ```
 
 Adapter l’utilisateur et le chemin renvoyé par `command -v ip`. L’application continue de fonctionner comme utilisateur normal et ne demande pas de mot de passe dans l’interface. Documentation : [connexion SQL et threads Qt](https://doc.qt.io/qt-6/qsqldatabase.html).
+
+## Reporting cloud Digisense
+
+Le service de reporting fonctionne dans le thread SQLite de l’application, tant que l’IHM est lancée. Il utilise la table `releves` pour les envois en attente, sans ajouter de seconde file ni de service externe.
+
+Créer `~/cloud.json` avec ces trois champs (un modèle vide se trouve dans `config/cloud.example.json`) :
+
+```json
+{
+  "apiToken": "VOTRE_TOKEN_BEARER",
+  "serial": "NUMERO_SERIE_DU_FRIGO",
+  "accessToken": "VOTRE_ACCESS_TOKEN_APPAREIL"
+}
+```
+
+```bash
+chmod 600 "$HOME/cloud.json"
+./build/frigo --fullscreen --interface can0 \
+  --database "$HOME/frigo.sqlite" --settings-file "$HOME/settings.json" \
+  --cloud-config "$HOME/cloud.json"
+```
+
+`apiToken` contient le token seul, sans le mot `Bearer`. Il est envoyé dans l’en-tête `Authorization: Bearer ...`. `serial` et `accessToken` sont placés dans le corps JSON. Le fichier est lu au démarrage ; après modification, relancer l’application. En son absence, le reporting reste désactivé et les relevés continuent à être enregistrés. La simulation et `can_diagnostic` n’activent jamais le cloud. Si l’application est lancée comme root, `~` correspond à `/root` ; utiliser des chemins absolus pour lever toute ambiguïté.
+
+Destination fixe : `POST https://cloud.digisense.es/api/v1/deviceapi/event`. Les certificats TLS sont vérifiés et les redirections HTTP ne sont pas suivies. Les tokens ne sont enregistrés ni dans SQLite ni dans les logs.
+
+Correspondance du corps `data` :
+
+| API | Source du relevé |
+| --- | --- |
+| `temperature` | `temperature_moyenne` |
+| `tempSen1` / `tempSen2` / `tempSen3` / `tempSen4` | CAP1 / CAP2 / CAP3 / EVA, en °C |
+| `battery` | `batterie`, en V |
+| `fan1` à `fan5` | `ventilateur_1` à `ventilateur_5` |
+| `lamp`, `compressor`, `defrostFan`, `doorState` | `lampe`, `compresseur`, `ventilateur_degivrage`, `porte_ouverte` |
+| `error` | Code CAN numérique pour une ligne d’erreur (ex. 82 pour `0x52`), sinon `null` |
+| `settingsTempMax`, `settingsTempMin`, `settingsEvapMin` | Réglages synchronisés au moment du relevé, en °C |
+| `maintenanceMode` | Booléen correspondant à l’état connu par l’IHM au moment du relevé |
+| `datetime` | Date UTC originale du relevé, format ISO 8601 avec millisecondes et `Z` |
+
+Les valeurs inconnues ou périmées restent `null`. Les anciens relevés ne possèdent pas les réglages/mode de maintenance historiques : ces champs restent `null`, sans reprendre les réglages actuels. Le relais porte est conservé localement ; le corps API fourni ne définit pas de champ pour celui-ci.
+
+La migration ajoute automatiquement `sent` (0 par défaut), `event_id`, `cloud_context`, `cloud_data`, `cloud_serial`, `cloud_error`, `send_attempts`, `next_retry_ms` et `last_http_status`. Les anciennes lignes sont conservées et deviennent aussi candidates à l’envoi. Une ligne passe à `sent = 1` seulement après une réponse HTTP 2xx contenant le booléen JSON `"success": true`. Une erreur réseau, un timeout, un HTTP non-2xx, un JSON invalide ou une réponse `success: false` conserve `sent = 0`.
+
+Chaque nouveau relevé périodique déclenche une tentative. Une trame d’erreur `0x001` crée aussitôt une ligne distincte et demande son envoi, sans attendre le prochain relevé. Une seule requête est en vol à la fois ; les erreurs ont priorité sur l’historique en attente dès que la requête en cours et le délai de reprise le permettent. Un verrou par fichier SQLite empêche deux instances de ce service d’envoyer la même base simultanément.
+
+Après échec, les délais de reprise sont de 30, 60, 120 puis 240 secondes ; 401/403 impose 5 minutes. Un `Retry-After` exprimé en secondes est respecté jusqu’à une heure. Le timeout d’une requête est de 15 secondes. Après réussite, le service reprend les lignes restantes avec au moins 500 ms entre requêtes. Les tentatives et leur prochain délai sont persistés. Un changement de numéro de série n’envoie pas sous la nouvelle identité les lignes déjà associées à l’ancienne.
+
+**Doublons :** avant le premier envoi, les données de l’événement sont figées en base avec un UUID stable, transmis dans `Idempotency-Key`. Les nouvelles tentatives conservent cet identifiant, les valeurs et la date originales. Les lignes `sent = 1` ne sont plus envoyées. Si le serveur accepte une requête mais que sa réponse se perd, le client doit réessayer : **seul le serveur peut garantir l’absence totale de doublons en honorant cette clé**. Cette prise en charge par Digisense n’a pas encore été confirmée. La réponse de succès fournie ne suffit pas à l’établir.
+
+Contrôle local :
+
+```sql
+SELECT sent, COUNT(*) FROM releves GROUP BY sent;
+SELECT id, datetime(timestamp_ms/1000, 'unixepoch'), sent,
+       send_attempts, last_http_status
+FROM releves ORDER BY id DESC LIMIT 20;
+```
 
 ## Réseau et clavier
 
