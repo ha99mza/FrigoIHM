@@ -40,7 +40,7 @@ private:
  QNetworkReply *reply=nullptr;
  QTimer *retryTimer=nullptr;
  std::unique_ptr<QLockFile> cloudLock;
- qint64 cloudBlockedUntil=0;
+ qint64 cloudBlockedUntil=0,nextNormalSend=0;
  QUrl cloudEndpoint=QUrl("https://cloud.digisense.es/api/v1/deviceapi/event");
  void snapshot(qint64 timestamp,int errorCode=-1);
  void sendPending();

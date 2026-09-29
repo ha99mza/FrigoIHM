@@ -15,6 +15,7 @@ class FakeCloud : public QObject {
 public:
  QTcpServer server;
  QList<QByteArray> requests;
+ QList<qint64> arrivalTimes;
  QList<QByteArray> responses;
  QList<int> statuses;
  FakeCloud(){
@@ -27,7 +28,7 @@ public:
     int split=bytes.indexOf("\r\n\r\n");if(split<0)return;
     int size=0;for(auto line:bytes.left(split).split('\n'))if(line.toLower().startsWith("content-length:"))size=line.mid(15).trimmed().toInt();
     if(bytes.size()<split+4+size||socket->property("handled").toBool())return;
-    socket->setProperty("handled",true);requests.append(bytes);
+    socket->setProperty("handled",true);requests.append(bytes);arrivalTimes.append(QDateTime::currentMSecsSinceEpoch());
     auto body=responses.isEmpty()?QByteArray("{\"success\":true}"):responses.takeFirst();
     auto status=statuses.isEmpty()?200:statuses.takeFirst();
     socket->write("HTTP/1.1 "+QByteArray::number(status)+" Result\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "+QByteArray::number(body.size())+"\r\n\r\n"+body);
@@ -42,6 +43,39 @@ public:
 class StorageTests : public QObject {
  Q_OBJECT
 private slots:
+ void ordinaryBacklogWaitsThirtySecondsAcrossRestart(){
+  QTemporaryDir dir;auto config=dir.filePath("cloud.json"),path=dir.filePath("paced.sqlite");
+  {QFile f(config);QVERIFY(f.open(QIODevice::WriteOnly));f.write("{\"apiToken\":\"test\",\"serial\":\"test\",\"accessToken\":\"test\"}");}
+  FakeCloud server;
+  {
+   HistoryWriter writer;writer.open(path);writer.sampleTimer->stop();writer.cloudEndpoint=server.url();
+   auto now=QDateTime::currentMSecsSinceEpoch();
+   for(int i=0;i<3;++i)writer.snapshot(now+i);
+   writer.configureCloud(config);QTRY_COMPARE(server.requests.size(),1);QTRY_VERIFY(!writer.reply);
+   writer.sendPending();QTest::qWait(650);QCOMPARE(server.requests.size(),1);
+   writer.close();
+  }
+  HistoryWriter writer;writer.open(path);writer.sampleTimer->stop();writer.cloudEndpoint=server.url();writer.configureCloud(config);
+  QTest::qWait(650);QCOMPARE(server.requests.size(),1);
+  writer.append(1,QByteArray(1,char(0x52)),QDateTime::currentMSecsSinceEpoch());
+  QTRY_COMPARE(server.requests.size(),2);QTRY_VERIFY(!writer.reply);
+  QCOMPARE(FakeCloud::body(server.requests[1])["data"].toObject()["error"].toInt(),0x52);
+  QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(),3,32000);
+  QVERIFY(FakeCloud::body(server.requests[2])["data"].toObject()["error"].isNull());
+  QVERIFY(server.arrivalTimes[2]-server.arrivalTimes[0]>=29990);
+  writer.close();
+ }
+ void meanUsesOneDecimal(){
+  Controller c(true,"test");const int raw[]={20,21,23};
+  for(int i=0;i<3;++i)c.receive(0x100+i,Protocol::encode(raw[i],2));QCOMPARE(c.mean(),2.1);
+  for(int i=0;i<3;++i)c.receive(0x100+i,Protocol::encode(-raw[i],2));QCOMPARE(c.mean(),-2.1);
+  QTemporaryDir dir;HistoryWriter writer;writer.open(dir.filePath("round.sqlite"));writer.sampleTimer->stop();
+  auto now=QDateTime::currentMSecsSinceEpoch();
+  for(int i=0;i<3;++i)writer.append(0x100+i,Protocol::encode(raw[i],2),now);
+  writer.snapshot(now);
+  {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT temperature_moyenne FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toDouble(),2.1);}
+  writer.close();
+ }
  void cloudRejectsUnconfirmedResponses_data(){
   QTest::addColumn<int>("status");QTest::addColumn<QByteArray>("response");
   QTest::newRow("HTTP failure despite success body")<<503<<QByteArray("{\"success\":true}");
@@ -101,7 +135,7 @@ private slots:
    HistoryWriter writer;writer.open(path);writer.sampleTimer->stop();writer.cloudEndpoint=server.url();writer.configureCloud(config);
    QCOMPARE(server.requests.size(),1); // Persisted backoff survives restart.
    {QSqlQuery q(writer.db);QVERIFY(q.exec("UPDATE releves SET next_retry_ms=0"));}
-   writer.sendPending();QTRY_COMPARE(server.requests.size(),2);QTRY_VERIFY(!writer.reply);
+   writer.nextNormalSend=0;writer.sendPending();QTRY_COMPARE(server.requests.size(),2);QTRY_VERIFY(!writer.reply);
    QCOMPARE(FakeCloud::body(server.requests[1]),FakeCloud::body(original));QVERIFY(server.requests[1].contains(eventId.toUtf8()));
    {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT sent,send_attempts FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),1);QCOMPARE(q.value(1).toInt(),2);}
    writer.sendPending();QTest::qWait(600);QCOMPARE(server.requests.size(),2);

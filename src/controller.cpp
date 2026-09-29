@@ -206,7 +206,7 @@ void Controller::receive(quint32 id,const QByteArray &p) {
  emit changed();
 }
 bool Controller::fresh(int i) const {return seen[i]>0 && QDateTime::currentMSecsSinceEpoch()-seen[i]<6000;}
-double Controller::mean() const {if(!fresh(0)||!fresh(1)||!fresh(2))return std::numeric_limits<double>::quiet_NaN();return (temperatures[0]+temperatures[1]+temperatures[2])/3;}
+double Controller::mean() const {if(!fresh(0)||!fresh(1)||!fresh(2))return std::numeric_limits<double>::quiet_NaN();return std::round((temperatures[0]+temperatures[1]+temperatures[2])/3*10)/10;}
 void Controller::requestMaintenance() {
  maintenanceActive=false;waitingMaintenance=false;maintenanceDeadline.stop();
  enqueue(0x30e,QByteArray(1,0),true);emit changed();
