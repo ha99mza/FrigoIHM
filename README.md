@@ -180,7 +180,7 @@ Correspondance du corps `data` :
 | `battery` | `batterie`, en V |
 | `fan1` à `fan5` | `ventilateur_1` à `ventilateur_5` |
 | `lamp`, `compressor`, `defrostFan`, `doorState` | `lampe`, `compresseur`, `ventilateur_degivrage`, `porte_ouverte` |
-| `error` | Code CAN numérique pour une ligne d’erreur (ex. 82 pour `0x52`), sinon `null` |
+| `error` | Description du code CAN pour une ligne d’erreur (ex. `"Porte ouverte trop longtemps"` pour `0x52`), sinon `null`. Le code numérique reste conservé localement dans `cloud_error` |
 | `settingsTempMax`, `settingsTempMin`, `settingsEvapMin` | Réglages synchronisés au moment du relevé, en °C |
 | `maintenanceMode` | Booléen correspondant à l’état connu par l’IHM au moment du relevé |
 | `datetime` | Date UTC originale du relevé, format ISO 8601 avec millisecondes et `Z` |

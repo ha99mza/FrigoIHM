@@ -177,8 +177,10 @@ void HistoryWriter::sendPending(){
   const QList<QPair<QString,QString>> fields={
    {"temperature","temperature_moyenne"},{"tempSen1","temp_cap1"},{"tempSen2","temp_cap2"},{"tempSen3","temp_cap3"},{"tempSen4","temp_eva"},
    {"battery","batterie"},{"fan1","ventilateur_1"},{"fan2","ventilateur_2"},{"fan3","ventilateur_3"},{"fan4","ventilateur_4"},{"fan5","ventilateur_5"},
-   {"lamp","lampe"},{"compressor","compresseur"},{"defrostFan","ventilateur_degivrage"},{"doorState","porte_ouverte"},{"error","cloud_error"}};
+   {"lamp","lampe"},{"compressor","compresseur"},{"defrostFan","ventilateur_degivrage"},{"doorState","porte_ouverte"}};
   for(const auto &f:fields)data.insert(f.first,q.value(f.second).isNull()?QJsonValue(QJsonValue::Null):QJsonValue::fromVariant(q.value(f.second)));
+  data.insert("error",q.value("cloud_error").isNull()?QJsonValue(QJsonValue::Null):
+   QJsonValue(Protocol::errorText(quint8(q.value("cloud_error").toUInt()))));
   if(data.value("temperature").isDouble())data.insert("temperature",std::round(data.value("temperature").toDouble()*10)/10);
   const auto context=QJsonDocument::fromJson(q.value("cloud_context").toString().toUtf8()).object();
   for(const auto &key:{"settingsTempMax","settingsTempMin","settingsEvapMin","maintenanceMode"})

@@ -59,7 +59,7 @@ private slots:
   QTest::qWait(650);QCOMPARE(server.requests.size(),1);
   writer.append(1,QByteArray(1,char(0x52)),QDateTime::currentMSecsSinceEpoch());
   QTRY_COMPARE(server.requests.size(),2);QTRY_VERIFY(!writer.reply);
-  QCOMPARE(FakeCloud::body(server.requests[1])["data"].toObject()["error"].toInt(),0x52);
+  QCOMPARE(FakeCloud::body(server.requests[1])["data"].toObject()["error"].toString(),QString("Porte ouverte trop longtemps"));
   QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(),3,32000);
   QVERIFY(FakeCloud::body(server.requests[2])["data"].toObject()["error"].isNull());
   QVERIFY(server.arrivalTimes[2]-server.arrivalTimes[0]>=29990);
@@ -142,7 +142,7 @@ private slots:
    // Receipt of an error creates and sends a NEW row without waiting 30 seconds.
    writer.append(1,QByteArray(1,char(0x52)),QDateTime::currentMSecsSinceEpoch());
    QTRY_COMPARE(server.requests.size(),3);QTRY_VERIFY(!writer.reply);
-   QCOMPARE(FakeCloud::body(server.requests[2])["data"].toObject()["error"].toInt(),0x52);
+   QCOMPARE(FakeCloud::body(server.requests[2])["data"].toObject()["error"].toString(),QString("Porte ouverte trop longtemps"));
    {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT count(*) FROM releves WHERE sent=1"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),2);}
    writer.close();
   }
