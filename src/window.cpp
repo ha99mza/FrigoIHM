@@ -217,7 +217,7 @@ void Window::header() {
     p->setBrush(c->alarm.isEmpty() ? green : red);
     p->setPen(Qt::NoPen);
     p->drawEllipse(QRectF(20, 22, 12, 12));
-    text({42, 0, 226, 56}, "CHAMBRE FROIDE A2", 15, tx, 600, false, Qt::AlignVCenter | Qt::AlignLeft, 1.2);
+    text({42, 0, 226, 56}, "CHAMBRE FROIDE", 15, tx, 600, false, Qt::AlignVCenter | Qt::AlignLeft, 1.2);
     rule(278, 16, 278, 40);
     QString run = c->simulation ? "Simulation · compresseur "
                   : c->synced   ? "Régulation · compresseur "
