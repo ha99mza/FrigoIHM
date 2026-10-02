@@ -151,10 +151,6 @@ void HistoryWriter::configureCloud(const QString &path){
  cloudLock=std::make_unique<QLockFile>(databasePath+".cloud.lock");
  cloudLock->setStaleLockTime(0); // This lock belongs to the entire reporting session.
  if(!cloudLock->tryLock(0)){cloudLock.reset();emit error("Reporting cloud deja actif pour cette base");return;}
- QSqlQuery last(db);last.prepare("SELECT MAX(last_attempt_ms) FROM releves WHERE cloud_serial=? AND cloud_error IS NULL");
- last.addBindValue(cloudSerial);
- if(!last.exec()){emit error(last.lastError().text());cloudLock.reset();return;}
- if(last.next()&&!last.value(0).isNull())nextNormalSend=last.value(0).toLongLong()+30000;
  network=new QNetworkAccessManager(this);retryTimer=new QTimer(this);retryTimer->setSingleShot(true);
  connect(retryTimer,&QTimer::timeout,this,&HistoryWriter::sendPending);
  sendPending();
@@ -164,11 +160,10 @@ void HistoryWriter::sendPending(){
  const qint64 now=QDateTime::currentMSecsSinceEpoch();
  if(now<cloudBlockedUntil){retryTimer->start(int(qMin(qint64(300000),cloudBlockedUntil-now)));return;}
  QSqlQuery q(db);
- q.prepare("SELECT * FROM releves WHERE sent=0 AND next_retry_ms<=? AND (cloud_serial IS NULL OR cloud_serial=?) AND (cloud_error IS NOT NULL OR ? >= ?) ORDER BY (cloud_error IS NOT NULL) DESC,timestamp_ms,id LIMIT 1");
- q.addBindValue(now);q.addBindValue(cloudSerial);q.addBindValue(now);q.addBindValue(nextNormalSend);
+ q.prepare("SELECT * FROM releves WHERE sent=0 AND next_retry_ms<=? AND (cloud_serial IS NULL OR cloud_serial=?) ORDER BY (cloud_error IS NOT NULL) DESC,timestamp_ms,id LIMIT 1");
+ q.addBindValue(now);q.addBindValue(cloudSerial);
  if(!q.exec()){emit error(q.lastError().text());retryTimer->start(30000);return;}
- if(!q.next()){retryTimer->start(nextNormalSend>now?int(qMin(qint64(30000),nextNormalSend-now)):30000);return;}
- const bool ordinary=q.value("cloud_error").isNull();
+ if(!q.next()){retryTimer->start(30000);return;}
  const qint64 id=q.value("id").toLongLong();const int attempts=q.value("send_attempts").toInt();
  QString eventId=q.value("event_id").toString();if(eventId.isEmpty())eventId=QUuid::createUuid().toString(QUuid::WithoutBraces);
  QJsonObject data;
@@ -192,7 +187,6 @@ void HistoryWriter::sendPending(){
  QSqlQuery update(db);update.prepare("UPDATE releves SET cloud_data=?,cloud_serial=?,event_id=?,send_attempts=send_attempts+1,last_attempt_ms=? WHERE id=? AND sent=0");
  update.addBindValue(QString::fromUtf8(QJsonDocument(data).toJson(QJsonDocument::Compact)));update.addBindValue(cloudSerial);update.addBindValue(eventId);update.addBindValue(now);update.addBindValue(id);
  if(!update.exec()){emit error(update.lastError().text());retryTimer->start(30000);return;}
- if(ordinary)nextNormalSend=now+30000;
  QNetworkRequest request(cloudEndpoint);
  request.setHeader(QNetworkRequest::ContentTypeHeader,"application/json");
  request.setRawHeader("Authorization","Bearer "+cloudApiToken.toUtf8());request.setRawHeader("Idempotency-Key",eventId.toUtf8());
@@ -215,7 +209,10 @@ void HistoryWriter::sendPending(){
   const bool saved=done.exec();if(!saved)emit error(done.lastError().text());
   if(!success)emit error(QString("Reporting cloud non confirme (HTTP %1), nouvelle tentative programmee").arg(status));
   pending->deleteLater();
-  if(success&&saved)retryTimer->start(0); // sendPending gates ordinary rows; errors keep priority.
+  if(success&&saved){
+   // Drain pending rows quickly. When empty, snapshot() supplies the next 30-second reading.
+   cloudBlockedUntil=QDateTime::currentMSecsSinceEpoch()+500;retryTimer->start(500);
+  }
   else {cloudBlockedUntil=QDateTime::currentMSecsSinceEpoch()+delay;retryTimer->start(delay);}
  });
 }

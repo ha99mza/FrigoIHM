@@ -43,26 +43,28 @@ public:
 class StorageTests : public QObject {
  Q_OBJECT
 private slots:
- void ordinaryBacklogWaitsThirtySecondsAcrossRestart(){
+ void backlogDrainsAcrossRestartThenWaitsForNewReading(){
   QTemporaryDir dir;auto config=dir.filePath("cloud.json"),path=dir.filePath("paced.sqlite");
   {QFile f(config);QVERIFY(f.open(QIODevice::WriteOnly));f.write("{\"apiToken\":\"test\",\"serial\":\"test\",\"accessToken\":\"test\"}");}
   FakeCloud server;
   {
    HistoryWriter writer;writer.open(path);writer.sampleTimer->stop();writer.cloudEndpoint=server.url();
-   auto now=QDateTime::currentMSecsSinceEpoch();
-   for(int i=0;i<3;++i)writer.snapshot(now+i);
-   writer.configureCloud(config);QTRY_COMPARE(server.requests.size(),1);QTRY_VERIFY(!writer.reply);
-   writer.sendPending();QTest::qWait(650);QCOMPARE(server.requests.size(),1);
-   writer.close();
+   auto now=QDateTime::currentMSecsSinceEpoch();for(int i=0;i<3;++i)writer.snapshot(now+i);
+   writer.configureCloud(config);QTRY_COMPARE(server.requests.size(),1);QTRY_VERIFY(!writer.reply);writer.close();
   }
   HistoryWriter writer;writer.open(path);writer.sampleTimer->stop();writer.cloudEndpoint=server.url();writer.configureCloud(config);
-  QTest::qWait(650);QCOMPARE(server.requests.size(),1);
+  QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(),3,4000);QTRY_VERIFY(!writer.reply);
+  QVERIFY(server.arrivalTimes[2]-server.arrivalTimes[1]>=490);
+  for(auto request:server.requests)QVERIFY(FakeCloud::body(request)["data"].toObject()["error"].isNull());
+  {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT count(*) FROM releves WHERE sent=0"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),0);}
+  writer.sendPending();QTest::qWait(1100);QCOMPARE(server.requests.size(),3); // Empty storage cannot resend stale data.
   writer.append(1,QByteArray(1,char(0x52)),QDateTime::currentMSecsSinceEpoch());
-  QTRY_COMPARE(server.requests.size(),2);QTRY_VERIFY(!writer.reply);
-  QCOMPARE(FakeCloud::body(server.requests[1])["data"].toObject()["error"].toString(),QString("Porte ouverte trop longtemps"));
-  QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(),3,32000);
-  QVERIFY(FakeCloud::body(server.requests[2])["data"].toObject()["error"].isNull());
-  QVERIFY(server.arrivalTimes[2]-server.arrivalTimes[0]>=29990);
+  QTRY_COMPARE(server.requests.size(),4);QTRY_VERIFY(!writer.reply);
+  QCOMPARE(FakeCloud::body(server.requests[3])["data"].toObject()["error"].toString(),QString("Porte ouverte trop longtemps"));
+  writer.sampleTimer->start();
+  QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(),5,32000);
+  QVERIFY(server.arrivalTimes[4]-server.arrivalTimes[3]>=29900);
+  QVERIFY(FakeCloud::body(server.requests[4])["data"].toObject()["error"].isNull());
   writer.close();
  }
  void meanUsesOneDecimal(){
@@ -135,7 +137,7 @@ private slots:
    HistoryWriter writer;writer.open(path);writer.sampleTimer->stop();writer.cloudEndpoint=server.url();writer.configureCloud(config);
    QCOMPARE(server.requests.size(),1); // Persisted backoff survives restart.
    {QSqlQuery q(writer.db);QVERIFY(q.exec("UPDATE releves SET next_retry_ms=0"));}
-   writer.nextNormalSend=0;writer.sendPending();QTRY_COMPARE(server.requests.size(),2);QTRY_VERIFY(!writer.reply);
+   writer.sendPending();QTRY_COMPARE(server.requests.size(),2);QTRY_VERIFY(!writer.reply);
    QCOMPARE(FakeCloud::body(server.requests[1]),FakeCloud::body(original));QVERIFY(server.requests[1].contains(eventId.toUtf8()));
    {QSqlQuery q(writer.db);QVERIFY(q.exec("SELECT sent,send_attempts FROM releves"));QVERIFY(q.next());QCOMPARE(q.value(0).toInt(),1);QCOMPARE(q.value(1).toInt(),2);}
    writer.sendPending();QTest::qWait(600);QCOMPARE(server.requests.size(),2);
