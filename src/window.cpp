@@ -275,7 +275,7 @@ void Window::temperaturePage(int top, int height) {
          Qt::AlignLeft | Qt::AlignVCenter, 1.96);
     text({335, qreal(top + 34), 610, 22}, "moyenne 3 sondes · mise à jour 2 s", 13, muted, 400, true);
     double value = c->mean();
-    QString str = std::isfinite(value) ? QString::number(value, 'f', 1) : "—";
+    QString str = std::isfinite(value) ? QString::number(value, 'f', 0) : "—";
     bool out =
         c->synced && std::isfinite(value) && (value < c->config[0] / 10. || value > c->config[1] / 10.);
     QFont f = plexFont(150, 600, true);
